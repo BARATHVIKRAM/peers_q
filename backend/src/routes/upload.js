@@ -8,78 +8,87 @@ const { authenticate } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Configure multer
-const storage = multer.diskStorage({
+// Use memory storage for images (no persistent disk on Render free tier)
+const memoryStorage = multer.memoryStorage();
+
+// Disk storage only for PDF/text (temp, deleted after use)
+const diskStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     const dir = path.join(__dirname, '../../uploads');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     cb(null, dir);
   },
   filename: (req, file, cb) => {
-    const unique = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    cb(null, `${unique}${path.extname(file.originalname)}`);
+    cb(null, `${Date.now()}-${Math.random().toString(36).substr(2, 9)}${path.extname(file.originalname)}`);
   }
 });
 
-const upload = multer({
-  storage,
+const docUpload = multer({
+  storage: diskStorage,
   limits: { fileSize: (parseInt(process.env.MAX_FILE_SIZE_MB) || 10) * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = ['.pdf', '.txt', '.md'];
     const ext = path.extname(file.originalname).toLowerCase();
-    if (allowed.includes(ext)) cb(null, true);
-    else cb(new Error('Only PDF, TXT, and MD files are supported'));
+    allowed.includes(ext) ? cb(null, true) : cb(new Error('Only PDF, TXT, MD supported'));
   }
 });
 
-// Extract text from file
-const extractText = async (filePath, mimetype) => {
+const imageUpload = multer({
+  storage: memoryStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    allowed.includes(ext) ? cb(null, true) : cb(new Error('Only image files supported'));
+  }
+});
+
+// Extract text from uploaded file
+const extractText = async (filePath) => {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === '.pdf') {
-    const dataBuffer = fs.readFileSync(filePath);
-    const data = await pdfParse(dataBuffer);
+    const data = await pdfParse(fs.readFileSync(filePath));
     return data.text;
-  } else {
-    return fs.readFileSync(filePath, 'utf-8');
   }
+  return fs.readFileSync(filePath, 'utf-8');
 };
 
 // Generate questions with Groq AI
 const generateQuestionsWithAI = async (text, count = 10, difficulty = 'medium', customPrompt = '') => {
   const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-
-  const truncatedText = text.substring(0, 8000);
+  const truncated = text.substring(0, 8000);
 
   const prompt = `You are a quiz generation expert. Based on the following content, generate exactly ${count} multiple-choice quiz questions.
 
 CONTENT:
-${truncatedText}
+${truncated}
 
 REQUIREMENTS:
-- Extra instruction: ${customPrompt || 'none'}
 - Difficulty: ${difficulty}
-- Each question must have exactly 4 options (A, B, C, D)
+${customPrompt ? `- Special instruction: ${customPrompt}` : ''}
+- Each question must have exactly 4 options
 - Only ONE correct answer per question
+- Correct answer should be placed at a RANDOM position (not always second)
 - Questions should test understanding, not just memorization
-- Make distractors plausible but clearly wrong to someone who understands the material
+- Make distractors plausible but clearly wrong
 
-Respond ONLY with a valid JSON array in this exact format:
+Respond ONLY with a valid JSON array, no markdown, no backticks:
 [
   {
     "text": "Question text here?",
     "options": [
-      {"id": "a", "text": "Option A text", "isCorrect": false},
-      {"id": "b", "text": "Option B text", "isCorrect": true},
-      {"id": "c", "text": "Option C text", "isCorrect": false},
-      {"id": "d", "text": "Option D text", "isCorrect": false}
+      {"id": "a", "text": "Option A", "isCorrect": false},
+      {"id": "b", "text": "Option B", "isCorrect": false},
+      {"id": "c", "text": "Correct answer", "isCorrect": true},
+      {"id": "d", "text": "Option D", "isCorrect": false}
     ],
-    "explanation": "Brief explanation of why the correct answer is right",
+    "explanation": "Why this is correct",
     "timeLimit": 30,
     "points": 100
   }
 ]
 
-Generate exactly ${count} questions. Return only the JSON array, no other text.`;
+Generate exactly ${count} questions. JSON only, no other text.`;
 
   const completion = await groq.chat.completions.create({
     messages: [{ role: 'user', content: prompt }],
@@ -89,84 +98,56 @@ Generate exactly ${count} questions. Return only the JSON array, no other text.`
   });
 
   const responseText = completion.choices[0]?.message?.content || '[]';
-
-  // Clean and parse JSON
   const jsonMatch = responseText.match(/\[[\s\S]*\]/);
   if (!jsonMatch) throw new Error('Invalid AI response format');
-
   return JSON.parse(jsonMatch[0]);
 };
 
-// Upload and generate quiz
-router.post('/generate', authenticate, upload.single('file'), async (req, res) => {
-  const filePath = req.file?.path;
-
-  try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-
-    const { questionCount = 10, difficulty = 'medium', title } = req.body;
-
-    // Extract text
-    const text = await extractText(filePath, req.file.mimetype);
-    if (!text || text.trim().length < 100) {
-      return res.status(400).json({ error: 'File content too short or could not be extracted' });
-    }
-
-    // Generate questions
-    const questions = await generateQuestionsWithAI(
-      text,
-      Math.min(parseInt(questionCount) || 10, 20),
-      difficulty
-    );
-
-    const { v4: uuidv4 } = require('uuid');
-    const processedQuestions = questions.map((q, idx) => ({
-      ...q,
-      id: uuidv4(),
-      type: 'multiple_choice',
-      orderIndex: idx
-    }));
-
-    res.json({
-      questions: processedQuestions,
-      sourceText: text.substring(0, 500) + '...',
-      fileName: req.file.originalname,
-      questionCount: processedQuestions.length
-    });
-  } catch (err) {
-    console.error('AI generation error:', err);
-    res.status(500).json({ error: err.message || 'Failed to generate quiz' });
-  } finally {
-    // Clean up uploaded file
-    if (filePath && fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-  }
-});
-
-// Upload image for question
-router.post('/image', authenticate, multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const allowed = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
-    const ext = path.extname(file.originalname).toLowerCase();
-    if (allowed.includes(ext)) cb(null, true);
-    else cb(new Error('Only image files are supported'));
-  }
-}).single('image'), async (req, res) => {
+// ── Upload image → returns base64 data URL (works on any host) ──
+router.post('/image', authenticate, imageUpload.single('image'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No image uploaded' });
-    const imageUrl = `/uploads/${req.file.filename}`;
-    res.json({ imageUrl });
+
+    const mime = req.file.mimetype;
+    const base64 = req.file.buffer.toString('base64');
+    const dataUrl = `data:${mime};base64,${base64}`;
+
+    res.json({ imageUrl: dataUrl });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-module.exports = router;
+// ── Upload doc + generate quiz ──
+router.post('/generate', authenticate, docUpload.single('file'), async (req, res) => {
+  const filePath = req.file?.path;
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-// Generate quiz from pasted text (no file upload)
+    const { questionCount = 10, difficulty = 'medium', customPrompt = '' } = req.body;
+    const text = await extractText(filePath);
+
+    if (!text || text.trim().length < 100) {
+      return res.status(400).json({ error: 'File content too short or unreadable' });
+    }
+
+    const questions = await generateQuestionsWithAI(
+      text, Math.min(parseInt(questionCount) || 10, 20), difficulty, customPrompt
+    );
+
+    const { v4: uuidv4 } = require('uuid');
+    const processed = questions.map((q, idx) => ({ ...q, id: uuidv4(), type: 'multiple_choice', orderIndex: idx }));
+
+    res.json({ questions: processed, fileName: req.file.originalname, questionCount: processed.length });
+  } catch (err) {
+    console.error('AI generation error:', err);
+    res.status(500).json({ error: err.message || 'Failed to generate quiz' });
+  } finally {
+    if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  }
+});
+
+// ── Generate quiz from pasted text ──
 router.post('/generate-text', authenticate, async (req, res) => {
   try {
     const { text, questionCount = 10, difficulty = 'medium', customPrompt = '' } = req.body;
@@ -174,7 +155,10 @@ router.post('/generate-text', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Text too short (min 80 characters)' });
     }
 
-    const questions = await generateQuestionsWithAI(text, Math.min(parseInt(questionCount) || 10, 20), difficulty, customPrompt);
+    const questions = await generateQuestionsWithAI(
+      text, Math.min(parseInt(questionCount) || 10, 20), difficulty, customPrompt
+    );
+
     const { v4: uuidv4 } = require('uuid');
     const processed = questions.map((q, idx) => ({ ...q, id: uuidv4(), type: 'multiple_choice', orderIndex: idx }));
 
@@ -184,3 +168,5 @@ router.post('/generate-text', authenticate, async (req, res) => {
     res.status(500).json({ error: err.message || 'Generation failed' });
   }
 });
+
+module.exports = router;

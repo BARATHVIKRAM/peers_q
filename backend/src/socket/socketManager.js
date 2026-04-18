@@ -345,16 +345,26 @@ const initializeSocket = (io) => {
           pointsEarned
         });
 
+        // Push answer + increment score (separated to avoid MongoDB conflict)
         await Session.findOneAndUpdate(
           { code: sessionCode, 'participants.socketId': socket.id },
           {
             $push: { 'participants.$.answers': { questionId, answerId: selectedId, answerText, isCorrect, timeTaken, pointsEarned, answeredAt: new Date() } },
-            $inc: { 'participants.$.score': pointsEarned },
-            ...(isCorrect
-              ? { $inc: { 'participants.$.streak': 1 } }
-              : { $set: { 'participants.$.streak': 0 } })
+            $inc: { 'participants.$.score': pointsEarned }
           }
         );
+        // Streak update separate (cannot mix $inc and $set in same op)
+        if (isCorrect) {
+          await Session.findOneAndUpdate(
+            { code: sessionCode, 'participants.socketId': socket.id },
+            { $inc: { 'participants.$.streak': 1 } }
+          );
+        } else {
+          await Session.findOneAndUpdate(
+            { code: sessionCode, 'participants.socketId': socket.id },
+            { $set: { 'participants.$.streak': 0 } }
+          );
+        }
 
         const cachedP = cache.participants.get(socket.id);
         if (cachedP) {
