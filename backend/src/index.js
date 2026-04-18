@@ -68,7 +68,7 @@ initializeSocket(io);
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => {
     console.log('✅ MongoDB connected');
-    const PORT = process.env.PORT || 5000;
+    const PORT = process.env.PORT || 4000;
     server.listen(PORT, () => {
       console.log(`🚀 PeersQ server running on port ${PORT}`);
     });
