@@ -1,6 +1,7 @@
 const Session = require('../models/Session');
 const Quiz = require('../models/Quiz');
 
+//This is just a simple comment line
 // In-memory store for active sessions (faster than DB for real-time ops)
 const activeSessions = new Map();
 
