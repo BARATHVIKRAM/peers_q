@@ -45,7 +45,7 @@ const extractText = async (filePath, mimetype) => {
 };
 
 // Generate questions with Groq AI
-const generateQuestionsWithAI = async (text, count = 10, difficulty = 'medium') => {
+const generateQuestionsWithAI = async (text, count = 10, difficulty = 'medium', customPrompt = '') => {
   const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
   const truncatedText = text.substring(0, 8000);
@@ -56,6 +56,7 @@ CONTENT:
 ${truncatedText}
 
 REQUIREMENTS:
+- Extra instruction: ${customPrompt || 'none'}
 - Difficulty: ${difficulty}
 - Each question must have exactly 4 options (A, B, C, D)
 - Only ONE correct answer per question
@@ -164,3 +165,22 @@ router.post('/image', authenticate, multer({
 });
 
 module.exports = router;
+
+// Generate quiz from pasted text (no file upload)
+router.post('/generate-text', authenticate, async (req, res) => {
+  try {
+    const { text, questionCount = 10, difficulty = 'medium', customPrompt = '' } = req.body;
+    if (!text || text.trim().length < 80) {
+      return res.status(400).json({ error: 'Text too short (min 80 characters)' });
+    }
+
+    const questions = await generateQuestionsWithAI(text, Math.min(parseInt(questionCount) || 10, 20), difficulty, customPrompt);
+    const { v4: uuidv4 } = require('uuid');
+    const processed = questions.map((q, idx) => ({ ...q, id: uuidv4(), type: 'multiple_choice', orderIndex: idx }));
+
+    res.json({ questions: processed, questionCount: processed.length });
+  } catch (err) {
+    console.error('generate-text error:', err);
+    res.status(500).json({ error: err.message || 'Generation failed' });
+  }
+});

@@ -1,58 +1,55 @@
 const Session = require('../models/Session');
 const Quiz = require('../models/Quiz');
 
-//This is just a simple comment line
-// In-memory store for active sessions (faster than DB for real-time ops)
+// In-memory active session cache
 const activeSessions = new Map();
+
+const DEFAULT_NAMES = ['Cosmic Fox','Neon Tiger','Pixel Wolf','Quantum Bear','Solar Hawk','Turbo Panda','Blaze Shark','Echo Lynx','Storm Raven','Nova Owl'];
+const DEFAULT_AVATARS = ['🦊','🐯','🐺','🐻','🦅','🐼','🦈','🐱','🦉','🌟'];
+
+const getDefaultName = (index) => DEFAULT_NAMES[index % DEFAULT_NAMES.length];
+const getDefaultAvatar = (index) => DEFAULT_AVATARS[index % DEFAULT_AVATARS.length];
 
 const initializeSocket = (io) => {
   io.on('connection', (socket) => {
-    console.log(`Socket connected: ${socket.id}`);
+    // ============================================================
+    // HOST EVENTS
+    // ============================================================
 
-    // ==================== HOST EVENTS ====================
-
-    // Host creates/joins session room
-    socket.on('host:join_session', async ({ sessionCode, hostToken }) => {
+    socket.on('host:join_session', async ({ sessionCode }) => {
       try {
-        const session = await Session.findOne({ code: sessionCode })
-          .populate('quizId');
+        const session = await Session.findOne({ code: sessionCode }).populate('quizId');
+        if (!session) return socket.emit('error', { message: 'Session not found' });
 
-        if (!session) {
-          socket.emit('error', { message: 'Session not found' });
-          return;
-        }
-
-        // Update host socket ID
         await Session.findByIdAndUpdate(session._id, { hostSocketId: socket.id });
 
         socket.join(`session:${sessionCode}`);
         socket.join(`host:${sessionCode}`);
 
-        // Cache session data
-        activeSessions.set(sessionCode, {
-          sessionId: session._id.toString(),
-          quiz: session.quizId,
-          status: session.status,
-          currentQuestionIndex: session.currentQuestionIndex,
-          participants: new Map(),
-          questionStartTime: null,
-          questionAnswers: new Map()
-        });
+        // Build cache
+        if (!activeSessions.has(sessionCode)) {
+          activeSessions.set(sessionCode, {
+            sessionId: session._id.toString(),
+            quiz: session.quizId,
+            status: session.status,
+            currentQuestionIndex: -1,
+            participants: new Map(),
+            questionStartTime: null,
+            questionAnswers: new Map(),
+            questionEnded: false
+          });
+        }
 
-        // Send existing participants
-        const existingParticipants = session.participants.filter(p => p.isActive);
-        existingParticipants.forEach(p => {
-          const cache = activeSessions.get(sessionCode);
-          if (cache) {
-            cache.participants.set(p.socketId || p._id.toString(), {
-              id: p._id.toString(),
-              socketId: p.socketId,
-              name: p.name,
-              avatar: p.avatar,
-              score: p.score,
-              streak: p.streak
-            });
-          }
+        const cache = activeSessions.get(sessionCode);
+        session.participants.filter(p => p.isActive).forEach(p => {
+          cache.participants.set(p.socketId || p._id.toString(), {
+            id: p._id.toString(),
+            socketId: p.socketId,
+            name: p.name,
+            avatar: p.avatar,
+            score: p.score,
+            streak: p.streak
+          });
         });
 
         socket.emit('host:session_ready', {
@@ -64,34 +61,44 @@ const initializeSocket = (io) => {
             settings: session.settings
           },
           quiz: session.quizId,
-          participants: existingParticipants
+          participants: session.participants.filter(p => p.isActive)
         });
-
       } catch (err) {
         console.error('host:join_session error:', err);
         socket.emit('error', { message: err.message });
       }
     });
 
-    // Host starts the quiz
     socket.on('host:start_quiz', async ({ sessionCode }) => {
       try {
-        await Session.findOneAndUpdate(
-          { code: sessionCode },
-          { status: 'active', startedAt: new Date() }
-        );
-
+        await Session.findOneAndUpdate({ code: sessionCode }, { status: 'active', startedAt: new Date() });
         const cache = activeSessions.get(sessionCode);
-        if (cache) cache.status = 'active';
+        if (cache) {
+          cache.status = 'active';
+          cache.currentQuestionIndex = -1; // reset
 
+          // Assign default names to participants who haven't set one
+          let idx = 0;
+          for (const [, p] of cache.participants) {
+            if (!p.name || p.name.trim() === '') {
+              p.name = getDefaultName(idx);
+              p.avatar = getDefaultAvatar(idx);
+              await Session.findOneAndUpdate(
+                { code: sessionCode, 'participants.socketId': p.socketId },
+                { $set: { 'participants.$.name': p.name, 'participants.$.avatar': p.avatar } }
+              );
+              io.to(p.socketId).emit('participant:name_assigned', { name: p.name, avatar: p.avatar });
+            }
+            idx++;
+          }
+        }
         io.to(`session:${sessionCode}`).emit('quiz:started', { sessionCode });
-
       } catch (err) {
         socket.emit('error', { message: err.message });
       }
     });
 
-    // Host sends next question
+    // Host moves to next question (with 5s countdown buffer)
     socket.on('host:next_question', async ({ sessionCode }) => {
       try {
         const cache = activeSessions.get(sessionCode);
@@ -99,63 +106,76 @@ const initializeSocket = (io) => {
 
         const session = await Session.findOne({ code: sessionCode }).populate('quizId');
         const quiz = session.quizId;
-        const nextIndex = (session.currentQuestionIndex || -1) + 1;
+        const nextIndex = cache.currentQuestionIndex + 1;
 
+        // ── Check if quiz is actually over ──
         if (nextIndex >= quiz.questions.length) {
-          // Quiz finished
           await endQuiz(io, sessionCode, session._id);
           return;
         }
 
-        const question = quiz.questions[nextIndex];
-        const startTime = new Date();
-
-        // Update DB
-        await Session.findByIdAndUpdate(session._id, {
-          currentQuestionIndex: nextIndex,
-          currentQuestionStartTime: startTime,
-          status: 'question_active'
-        });
-
-        // Update cache
-        cache.currentQuestionIndex = nextIndex;
-        cache.questionStartTime = startTime;
-        cache.status = 'question_active';
+        cache.questionEnded = false;
         cache.questionAnswers = new Map();
 
-        // Send question to everyone
-        // Host gets full question with answers
-        socket.emit('question:start_host', {
-          question,
+        // ── 5-second buffer countdown before question ──
+        io.to(`session:${sessionCode}`).emit('question:countdown', {
+          seconds: 5,
           questionIndex: nextIndex,
           totalQuestions: quiz.questions.length,
-          startTime: startTime.toISOString()
+          questionNumber: nextIndex + 1
         });
 
-        // Participants get question WITHOUT correct answers
-        const participantQuestion = {
-          id: question.id,
-          text: question.text,
-          image: question.image,
-          type: question.type,
-          options: question.options.map(o => ({ id: o.id, text: o.text })),
-          timeLimit: question.timeLimit,
-          points: question.points,
-          questionIndex: nextIndex,
-          totalQuestions: quiz.questions.length,
-          startTime: startTime.toISOString()
-        };
-
-        socket.to(`session:${sessionCode}`).emit('question:start', participantQuestion);
-
-        // Auto-end question after time limit
         setTimeout(async () => {
-          const currentCache = activeSessions.get(sessionCode);
-          if (currentCache && currentCache.status === 'question_active' &&
-              currentCache.currentQuestionIndex === nextIndex) {
-            await endQuestion(io, sessionCode, session._id, question, nextIndex);
-          }
-        }, (question.timeLimit + 2) * 1000);
+          // Re-fetch in case something changed during buffer
+          const freshSession = await Session.findOne({ code: sessionCode }).populate('quizId');
+          const question = freshSession.quizId.questions[nextIndex];
+          const startTime = new Date();
+
+          await Session.findByIdAndUpdate(freshSession._id, {
+            currentQuestionIndex: nextIndex,
+            currentQuestionStartTime: startTime,
+            status: 'question_active'
+          });
+
+          cache.currentQuestionIndex = nextIndex;
+          cache.questionStartTime = startTime;
+          cache.status = 'question_active';
+
+          // Host gets full question with answers
+          socket.emit('question:start_host', {
+            question,
+            questionIndex: nextIndex,
+            totalQuestions: freshSession.quizId.questions.length,
+            startTime: startTime.toISOString()
+          });
+
+          // Participants get question WITHOUT correct answers
+          const participantQ = {
+            id: question.id,
+            text: question.text,
+            image: question.image,
+            type: question.type,
+            options: question.options.map(o => ({ id: o.id, text: o.text })),
+            timeLimit: question.timeLimit,
+            points: question.points,
+            questionIndex: nextIndex,
+            totalQuestions: freshSession.quizId.questions.length,
+            startTime: startTime.toISOString()
+          };
+          socket.to(`session:${sessionCode}`).emit('question:start', participantQ);
+
+          // Auto-end after time limit (+2s grace)
+          setTimeout(async () => {
+            const currentCache = activeSessions.get(sessionCode);
+            if (currentCache &&
+                !currentCache.questionEnded &&
+                currentCache.status === 'question_active' &&
+                currentCache.currentQuestionIndex === nextIndex) {
+              await endQuestion(io, sessionCode, freshSession._id, question, nextIndex);
+            }
+          }, (question.timeLimit + 2) * 1000);
+
+        }, 5000); // 5-second buffer
 
       } catch (err) {
         console.error('host:next_question error:', err);
@@ -163,15 +183,14 @@ const initializeSocket = (io) => {
       }
     });
 
-    // Host manually ends question
+    // Host manually ends current question early
     socket.on('host:end_question', async ({ sessionCode }) => {
       try {
         const cache = activeSessions.get(sessionCode);
-        if (!cache) return;
+        if (!cache || cache.questionEnded) return;
 
         const session = await Session.findOne({ code: sessionCode }).populate('quizId');
         const question = session.quizId.questions[cache.currentQuestionIndex];
-
         await endQuestion(io, sessionCode, session._id, question, cache.currentQuestionIndex);
       } catch (err) {
         socket.emit('error', { message: err.message });
@@ -182,9 +201,20 @@ const initializeSocket = (io) => {
     socket.on('host:show_leaderboard', async ({ sessionCode }) => {
       try {
         const leaderboard = await getLeaderboard(sessionCode);
-        io.to(`session:${sessionCode}`).emit('leaderboard:show', { leaderboard });
-
         await Session.findOneAndUpdate({ code: sessionCode }, { status: 'leaderboard' });
+        const cache = activeSessions.get(sessionCode);
+        if (cache) cache.status = 'leaderboard';
+        io.to(`session:${sessionCode}`).emit('leaderboard:show', { leaderboard });
+      } catch (err) {
+        socket.emit('error', { message: err.message });
+      }
+    });
+
+    // Host ends quiz early
+    socket.on('host:end_quiz', async ({ sessionCode }) => {
+      try {
+        const session = await Session.findOne({ code: sessionCode });
+        if (session) await endQuiz(io, sessionCode, session._id);
       } catch (err) {
         socket.emit('error', { message: err.message });
       }
@@ -203,13 +233,11 @@ const initializeSocket = (io) => {
             }
           }
         }
-
         await Session.findOneAndUpdate(
           { code: sessionCode },
           { $set: { 'participants.$[elem].isActive': false } },
           { arrayFilters: [{ 'elem._id': participantId }] }
         );
-
         const participants = await getParticipants(sessionCode);
         io.to(`session:${sessionCode}`).emit('participants:updated', { participants });
       } catch (err) {
@@ -217,9 +245,10 @@ const initializeSocket = (io) => {
       }
     });
 
-    // ==================== PARTICIPANT EVENTS ====================
+    // ============================================================
+    // PARTICIPANT EVENTS
+    // ============================================================
 
-    // Participant joins session
     socket.on('participant:join', async ({ sessionCode, name, avatar }) => {
       try {
         const session = await Session.findOne({
@@ -227,21 +256,16 @@ const initializeSocket = (io) => {
           status: { $ne: 'finished' }
         });
 
-        if (!session) {
-          socket.emit('error', { message: 'Session not found or already ended' });
-          return;
+        if (!session) return socket.emit('error', { message: 'Session not found or ended' });
+        if (session.participants.filter(p => p.isActive).length >= session.settings.maxParticipants) {
+          return socket.emit('error', { message: 'Session is full (max 50)' });
         }
 
-        if (session.participants.length >= session.settings.maxParticipants) {
-          socket.emit('error', { message: 'Session is full (max 50 participants)' });
-          return;
-        }
-
-        // Add participant to DB
-        const participant = {
+        const cleanName = name?.trim()?.substring(0, 30) || '';
+        const participantData = {
           socketId: socket.id,
-          name: name.trim().substring(0, 30),
-          avatar: avatar || generateAvatar(name),
+          name: cleanName,
+          avatar: avatar || '🎯',
           score: 0,
           answers: [],
           streak: 0,
@@ -249,41 +273,29 @@ const initializeSocket = (io) => {
           joinedAt: new Date()
         };
 
-        await Session.findByIdAndUpdate(session._id, {
-          $push: { participants: participant }
-        });
+        await Session.findByIdAndUpdate(session._id, { $push: { participants: participantData } });
 
-        // Add to cache
         const cache = activeSessions.get(sessionCode.toUpperCase());
         if (cache) {
           cache.participants.set(socket.id, {
             id: socket.id,
             socketId: socket.id,
-            name: participant.name,
-            avatar: participant.avatar,
+            name: cleanName,
+            avatar: participantData.avatar,
             score: 0,
             streak: 0
           });
         }
 
         socket.join(`session:${sessionCode.toUpperCase()}`);
-        socket.join(`participant:${socket.id}`);
 
-        // Confirm join
         socket.emit('participant:joined', {
-          participant,
-          session: {
-            code: session.code,
-            status: session.status,
-            quizTitle: session.quizId?.title
-          }
+          participant: participantData,
+          session: { code: session.code, status: session.status }
         });
 
-        // Notify host and all participants
         const participants = await getParticipants(sessionCode.toUpperCase());
         io.to(`session:${sessionCode.toUpperCase()}`).emit('participants:updated', { participants });
-
-        console.log(`${name} joined session ${sessionCode}`);
 
       } catch (err) {
         console.error('participant:join error:', err);
@@ -291,76 +303,67 @@ const initializeSocket = (io) => {
       }
     });
 
-    // Participant submits answer
-    socket.on('participant:answer', async ({ sessionCode, questionId, answerId, answerText }) => {
+    // Participant submits answer (supports multi-choice)
+    socket.on('participant:answer', async ({ sessionCode, questionId, answerId, answerIds, answerText }) => {
       try {
         const cache = activeSessions.get(sessionCode);
-        if (!cache || cache.status !== 'question_active') {
-          socket.emit('answer:too_late');
-          return;
-        }
-
-        // Check if already answered
-        if (cache.questionAnswers.has(socket.id)) {
-          socket.emit('answer:already_submitted');
-          return;
-        }
+        if (!cache || cache.status !== 'question_active') return socket.emit('answer:too_late');
+        if (cache.questionAnswers.has(socket.id)) return socket.emit('answer:already_submitted');
 
         const session = await Session.findOne({ code: sessionCode });
         const quiz = await Quiz.findById(session.quizId);
         const question = quiz.questions.find(q => q.id === questionId);
-
-        if (!question) return socket.emit('error', { message: 'Question not found' });
+        if (!question) return;
 
         const timeTaken = (new Date() - cache.questionStartTime) / 1000;
-        const correctOption = question.options.find(o => o.isCorrect);
-        const isCorrect = answerId === correctOption?.id;
+        let isCorrect = false;
+        let selectedId = answerId;
 
-        // Calculate points (faster = more points)
+        if (question.type === 'multiple_select') {
+          // multi-choice: all correct options must be selected, no wrong ones
+          const correctIds = new Set(question.options.filter(o => o.isCorrect).map(o => o.id));
+          const selectedIds = new Set(answerIds || []);
+          isCorrect = [...correctIds].every(id => selectedIds.has(id)) &&
+                      [...selectedIds].every(id => correctIds.has(id));
+          selectedId = (answerIds || []).join(',');
+        } else {
+          const correctOption = question.options.find(o => o.isCorrect);
+          isCorrect = answerId === correctOption?.id;
+        }
+
         let pointsEarned = 0;
         if (isCorrect) {
           const timeBonus = Math.max(0, 1 - (timeTaken / question.timeLimit));
           pointsEarned = Math.round(question.points * (0.5 + 0.5 * timeBonus));
         }
 
-        // Record answer in cache
         cache.questionAnswers.set(socket.id, {
           participantName: cache.participants.get(socket.id)?.name,
-          answerId,
+          answerId: selectedId,
           isCorrect,
           timeTaken,
           pointsEarned
         });
 
-        // Update DB
         await Session.findOneAndUpdate(
           { code: sessionCode, 'participants.socketId': socket.id },
           {
-            $push: {
-              'participants.$.answers': {
-                questionId,
-                answerId,
-                answerText,
-                isCorrect,
-                timeTaken,
-                pointsEarned,
-                answeredAt: new Date()
-              }
-            },
+            $push: { 'participants.$.answers': { questionId, answerId: selectedId, answerText, isCorrect, timeTaken, pointsEarned, answeredAt: new Date() } },
             $inc: { 'participants.$.score': pointsEarned },
-            ...(isCorrect ? { $inc: { 'participants.$.streak': 1 } } : { $set: { 'participants.$.streak': 0 } })
+            ...(isCorrect
+              ? { $inc: { 'participants.$.streak': 1 } }
+              : { $set: { 'participants.$.streak': 0 } })
           }
         );
 
-        // Update cache participant score
-        const cachedParticipant = cache.participants.get(socket.id);
-        if (cachedParticipant) {
-          cachedParticipant.score += pointsEarned;
-          if (isCorrect) cachedParticipant.streak += 1;
-          else cachedParticipant.streak = 0;
+        const cachedP = cache.participants.get(socket.id);
+        if (cachedP) {
+          cachedP.score += pointsEarned;
+          if (isCorrect) cachedP.streak = (cachedP.streak || 0) + 1;
+          else cachedP.streak = 0;
         }
 
-        // Confirm to participant
+        const correctOption = question.options.find(o => o.isCorrect);
         socket.emit('answer:received', {
           isCorrect,
           pointsEarned,
@@ -368,20 +371,19 @@ const initializeSocket = (io) => {
           correctAnswerId: correctOption?.id
         });
 
-        // Notify host of answer count
         const answerCount = cache.questionAnswers.size;
         const totalParticipants = cache.participants.size;
         io.to(`host:${sessionCode}`).emit('host:answer_update', {
           answerCount,
           totalParticipants,
-          percentage: Math.round((answerCount / totalParticipants) * 100)
+          percentage: totalParticipants > 0 ? Math.round((answerCount / totalParticipants) * 100) : 0
         });
 
-        // Auto-end if all answered
-        if (answerCount >= totalParticipants && totalParticipants > 0) {
-          const currentSession = await Session.findOne({ code: sessionCode }).populate('quizId');
-          const currentQuestion = currentSession.quizId.questions[cache.currentQuestionIndex];
-          await endQuestion(io, sessionCode, currentSession._id, currentQuestion, cache.currentQuestionIndex);
+        // Auto-end if everyone answered
+        if (answerCount >= totalParticipants && totalParticipants > 0 && !cache.questionEnded) {
+          const freshSession = await Session.findOne({ code: sessionCode }).populate('quizId');
+          const currentQ = freshSession.quizId.questions[cache.currentQuestionIndex];
+          await endQuestion(io, sessionCode, freshSession._id, currentQ, cache.currentQuestionIndex);
         }
 
       } catch (err) {
@@ -390,23 +392,18 @@ const initializeSocket = (io) => {
       }
     });
 
-    // ==================== DISCONNECT ====================
-
+    // ============================================================
+    // DISCONNECT
+    // ============================================================
     socket.on('disconnect', async () => {
-      console.log(`Socket disconnected: ${socket.id}`);
-
-      // Find which session this socket was in
       for (const [sessionCode, cache] of activeSessions) {
         if (cache.participants.has(socket.id)) {
           cache.participants.delete(socket.id);
-
-          // Mark as inactive in DB
           await Session.findOneAndUpdate(
             { code: sessionCode, 'participants.socketId': socket.id },
             { $set: { 'participants.$.isActive': false } }
-          );
-
-          const participants = await getParticipants(sessionCode);
+          ).catch(() => {});
+          const participants = await getParticipants(sessionCode).catch(() => []);
           io.to(`session:${sessionCode}`).emit('participants:updated', { participants });
           break;
         }
@@ -415,62 +412,71 @@ const initializeSocket = (io) => {
   });
 };
 
-// Helper: End a question
+// ── Helper: End a question ──
 async function endQuestion(io, sessionCode, sessionId, question, questionIndex) {
   const cache = activeSessions.get(sessionCode);
-  if (!cache) return;
+  if (!cache || cache.questionEnded) return;
 
+  cache.questionEnded = true;
   cache.status = 'question_ended';
 
   await Session.findByIdAndUpdate(sessionId, { status: 'question_ended' });
 
-  // Build answer stats
   const answerStats = {};
-  question.options.forEach(o => { answerStats[o.id] = { count: 0, text: o.text, isCorrect: o.isCorrect }; });
+  question.options.forEach(o => {
+    answerStats[o.id] = { count: 0, text: o.text, isCorrect: o.isCorrect };
+  });
 
   for (const [, ans] of cache.questionAnswers) {
-    if (ans.answerId && answerStats[ans.answerId]) {
-      answerStats[ans.answerId].count++;
+    if (ans.answerId) {
+      // Handle multi-select (comma-separated IDs)
+      const ids = ans.answerId.split(',');
+      ids.forEach(id => {
+        if (answerStats[id]) answerStats[id].count++;
+      });
     }
   }
 
-  const correctAnswerId = question.options.find(o => o.isCorrect)?.id;
-  const totalAnswers = cache.questionAnswers.size;
+  const correctAnswerIds = question.options.filter(o => o.isCorrect).map(o => o.id);
 
   io.to(`session:${sessionCode}`).emit('question:ended', {
     questionId: question.id,
-    correctAnswerId,
+    correctAnswerId: correctAnswerIds[0], // primary correct
+    correctAnswerIds,
     answerStats,
-    totalAnswers,
+    totalAnswers: cache.questionAnswers.size,
     explanation: question.explanation,
     questionIndex
   });
+
+  // Auto-show leaderboard after 3s
+  setTimeout(async () => {
+    try {
+      const leaderboard = await getLeaderboard(sessionCode);
+      await Session.findOneAndUpdate({ code: sessionCode }, { status: 'leaderboard' });
+      if (cache) cache.status = 'leaderboard';
+      io.to(`session:${sessionCode}`).emit('leaderboard:show', { leaderboard, questionIndex });
+    } catch {}
+  }, 3500);
 }
 
-// Helper: End the entire quiz
+// ── Helper: End quiz ──
 async function endQuiz(io, sessionCode, sessionId) {
   const cache = activeSessions.get(sessionCode);
 
-  await Session.findByIdAndUpdate(sessionId, {
-    status: 'finished',
-    endedAt: new Date()
-  });
-
+  await Session.findByIdAndUpdate(sessionId, { status: 'finished', endedAt: new Date() });
   if (cache) cache.status = 'finished';
 
   const leaderboard = await getLeaderboard(sessionCode);
-
   io.to(`session:${sessionCode}`).emit('quiz:finished', { leaderboard });
 
-  // Cleanup cache after delay
-  setTimeout(() => activeSessions.delete(sessionCode), 60000);
+  setTimeout(() => activeSessions.delete(sessionCode), 120000);
 }
 
-// Helper: Get leaderboard
+// ── Helper: Leaderboard ──
 async function getLeaderboard(sessionCode) {
   const session = await Session.findOne({ code: sessionCode });
   if (!session) return [];
-
   return session.participants
     .filter(p => p.isActive !== false)
     .sort((a, b) => b.score - a.score)
@@ -485,11 +491,10 @@ async function getLeaderboard(sessionCode) {
     }));
 }
 
-// Helper: Get participants
+// ── Helper: Participants list ──
 async function getParticipants(sessionCode) {
   const session = await Session.findOne({ code: sessionCode });
   if (!session) return [];
-
   return session.participants
     .filter(p => p.isActive !== false)
     .map(p => ({
@@ -499,13 +504,6 @@ async function getParticipants(sessionCode) {
       score: p.score,
       streak: p.streak
     }));
-}
-
-// Helper: Generate avatar emoji
-function generateAvatar(name) {
-  const avatars = ['🦊', '🐺', '🦁', '🐯', '🦝', '🐸', '🦋', '🦄', '🐉', '🦅', '🐬', '🦈', '🦍', '🐙', '🦑'];
-  const index = name.charCodeAt(0) % avatars.length;
-  return avatars[index];
 }
 
 module.exports = { initializeSocket };

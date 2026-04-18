@@ -1,66 +1,121 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
-import { Zap, Trophy, Clock } from 'lucide-react'
+import { Clock, Trophy, Zap, CheckCircle, XCircle } from 'lucide-react'
 import { useSocket } from '../contexts/SocketContext'
 import toast from 'react-hot-toast'
 
-const ANSWER_COLORS = [
-  { base: 'from-blue-600/20 to-blue-500/10 border-blue-400/30 hover:border-blue-400/60', selected: 'from-blue-600/40 to-blue-500/30 border-blue-400/70', letter: 'bg-blue-500 text-white' },
-  { base: 'from-purple-600/20 to-purple-500/10 border-purple-400/30 hover:border-purple-400/60', selected: 'from-purple-600/40 to-purple-500/30 border-purple-400/70', letter: 'bg-purple-500 text-white' },
-  { base: 'from-amber-600/20 to-amber-500/10 border-amber-400/30 hover:border-amber-400/60', selected: 'from-amber-600/40 to-amber-500/30 border-amber-400/70', letter: 'bg-amber-500 text-white' },
-  { base: 'from-rose-600/20 to-rose-500/10 border-rose-400/30 hover:border-rose-400/60', selected: 'from-rose-600/40 to-rose-500/30 border-rose-400/70', letter: 'bg-rose-500 text-white' }
+const OPT_STYLES = [
+  { base: 'opt-a', accent: '#0057FF', bg: 'rgba(0,87,255,0.05)', selectedBg: 'rgba(0,87,255,0.1)', border: '#0057FF', letterBg: '#0057FF' },
+  { base: 'opt-b', accent: '#8B5CF6', bg: 'rgba(139,92,246,0.05)', selectedBg: 'rgba(139,92,246,0.1)', border: '#8B5CF6', letterBg: '#8B5CF6' },
+  { base: 'opt-c', accent: '#F59E0B', bg: 'rgba(245,158,11,0.05)', selectedBg: 'rgba(245,158,11,0.1)', border: '#F59E0B', letterBg: '#F59E0B' },
+  { base: 'opt-d', accent: '#EF4444', bg: 'rgba(239,68,68,0.05)', selectedBg: 'rgba(239,68,68,0.1)', border: '#EF4444', letterBg: '#EF4444' },
 ]
+const LETTERS = ['A', 'B', 'C', 'D']
+
+const CONFETTI_COLORS = ['#0057FF', '#00D4FF', '#FFB800', '#00E87A', '#FF4060', '#8B5CF6']
+
+function Confetti() {
+  const pieces = Array.from({ length: 60 }, (_, i) => ({
+    id: i,
+    color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+    left: `${Math.random() * 100}%`,
+    width: `${6 + Math.random() * 8}px`,
+    height: `${6 + Math.random() * 10}px`,
+    duration: `${2 + Math.random() * 3}s`,
+    delay: `${Math.random() * 2}s`,
+    rotate: `${Math.random() * 360}deg`
+  }))
+  return (
+    <>
+      {pieces.map(p => (
+        <div key={p.id} className="confetti-piece"
+          style={{
+            left: p.left,
+            top: '-20px',
+            width: p.width,
+            height: p.height,
+            background: p.color,
+            animationDuration: p.duration,
+            animationDelay: p.delay,
+            transform: `rotate(${p.rotate})`
+          }} />
+      ))}
+    </>
+  )
+}
 
 export default function PlayPage() {
   const { sessionCode } = useParams()
   const location = useLocation()
   const navigate = useNavigate()
   const { socket } = useSocket()
+  const { name: initialName, avatar: initialAvatar } = location.state || {}
 
-  const { name, avatar } = location.state || {}
-
-  const [phase, setPhase] = useState('joining') // joining | waiting | question | answered | results | leaderboard | finished
+  const [phase, setPhase] = useState('joining')
+  const [myName, setMyName] = useState(initialName || '')
+  const [myAvatar, setMyAvatar] = useState(initialAvatar || '🎯')
   const [question, setQuestion] = useState(null)
   const [selectedAnswer, setSelectedAnswer] = useState(null)
+  const [selectedAnswers, setSelectedAnswers] = useState([]) // multi-select
   const [answerResult, setAnswerResult] = useState(null)
   const [leaderboard, setLeaderboard] = useState([])
   const [score, setScore] = useState(0)
   const [timeLeft, setTimeLeft] = useState(0)
-  const [questionIndex, setQuestionIndex] = useState(0)
-  const [totalQuestions, setTotalQuestions] = useState(0)
-  const [quizTitle, setQuizTitle] = useState('')
+  const [qIndex, setQIndex] = useState(0)
+  const [totalQs, setTotalQs] = useState(0)
+  const [countdown, setCountdown] = useState(null)
   const [myRank, setMyRank] = useState(null)
+  const [quizTitle, setQuizTitle] = useState('')
   const timerRef = useRef(null)
+  const countdownRef = useRef(null)
   const hasJoined = useRef(false)
+  const multiSubmitTimer = useRef(null)
 
   useEffect(() => {
-    if (!socket || !name || hasJoined.current) return
+    if (!socket || !initialName || hasJoined.current) return
     hasJoined.current = true
-
-    socket.emit('participant:join', { sessionCode, name, avatar })
+    socket.emit('participant:join', { sessionCode, name: initialName, avatar: initialAvatar })
 
     socket.on('participant:joined', ({ session }) => {
       setPhase('waiting')
-      setQuizTitle(session.quizTitle || 'Quiz')
+      setQuizTitle(session?.quizTitle || '')
+    })
+
+    socket.on('participant:name_assigned', ({ name, avatar }) => {
+      setMyName(name)
+      setMyAvatar(avatar)
     })
 
     socket.on('quiz:started', () => setPhase('waiting'))
 
+    socket.on('question:countdown', ({ seconds, questionIndex, totalQuestions }) => {
+      setPhase('countdown')
+      setQIndex(questionIndex)
+      setTotalQs(totalQuestions)
+      let s = seconds
+      setCountdown(s)
+      clearInterval(countdownRef.current)
+      countdownRef.current = setInterval(() => {
+        s--
+        setCountdown(s)
+        if (s <= 0) clearInterval(countdownRef.current)
+      }, 1000)
+    })
+
     socket.on('question:start', ({ questionIndex: qi, totalQuestions: tq, startTime, ...q }) => {
       setQuestion(q)
-      setQuestionIndex(qi)
-      setTotalQuestions(tq)
+      setQIndex(qi)
+      setTotalQs(tq)
       setSelectedAnswer(null)
+      setSelectedAnswers([])
       setAnswerResult(null)
       setPhase('question')
-
+      clearTimeout(timerRef.current)
       const start = new Date(startTime)
-      const total = q.timeLimit
       const tick = () => {
-        const elapsed = (Date.now() - start.getTime()) / 1000
-        const remaining = Math.max(0, total - elapsed)
-        setTimeLeft(Math.ceil(remaining))
-        if (remaining > 0) timerRef.current = setTimeout(tick, 200)
+        const rem = Math.max(0, q.timeLimit - (Date.now() - start) / 1000)
+        setTimeLeft(Math.ceil(rem))
+        if (rem > 0) timerRef.current = setTimeout(tick, 200)
       }
       tick()
     })
@@ -74,145 +129,185 @@ export default function PlayPage() {
 
     socket.on('answer:too_late', () => {
       setPhase('answered')
-      setAnswerResult({ isCorrect: false, pointsEarned: 0, timeTaken: 0, correctAnswerId: null, tooLate: true })
+      setAnswerResult({ isCorrect: false, pointsEarned: 0, tooLate: true })
     })
 
-    socket.on('question:ended', ({ correctAnswerId, explanation }) => {
-      if (phase !== 'answered') {
-        setAnswerResult(r => r ? { ...r, correctAnswerId } : { isCorrect: false, pointsEarned: 0, correctAnswerId, timeTaken: 0, noAnswer: true })
-        setPhase('answered')
-      }
+    socket.on('question:ended', ({ correctAnswerId }) => {
       clearTimeout(timerRef.current)
+      setAnswerResult(r => r ? { ...r, correctAnswerId } : { isCorrect: false, pointsEarned: 0, correctAnswerId, noAnswer: true })
+      setPhase('answered')
     })
 
     socket.on('leaderboard:show', ({ leaderboard: lb }) => {
       setLeaderboard(lb)
-      const myEntry = lb.find(p => p.name === name)
-      setMyRank(myEntry?.rank || null)
+      const me = lb.find(p => p.name === myName)
+      setMyRank(me?.rank || null)
       setPhase('leaderboard')
     })
 
     socket.on('quiz:finished', ({ leaderboard: lb }) => {
       setLeaderboard(lb)
-      const myEntry = lb.find(p => p.name === name)
-      setMyRank(myEntry?.rank || null)
+      const me = lb.find(p => p.name === myName)
+      setMyRank(me?.rank || null)
       setPhase('finished')
     })
 
-    socket.on('participant:kicked', () => {
-      toast.error('You were removed from the session')
-      navigate('/join')
-    })
-
+    socket.on('participant:kicked', () => { toast.error('You were removed'); navigate('/join') })
     socket.on('error', ({ message }) => toast.error(message))
 
     return () => {
-      socket.off('participant:joined')
-      socket.off('quiz:started')
-      socket.off('question:start')
-      socket.off('answer:received')
-      socket.off('answer:too_late')
-      socket.off('question:ended')
-      socket.off('leaderboard:show')
-      socket.off('quiz:finished')
-      socket.off('participant:kicked')
-      socket.off('error')
+      ['participant:joined','participant:name_assigned','quiz:started','question:countdown',
+       'question:start','answer:received','answer:too_late','question:ended',
+       'leaderboard:show','quiz:finished','participant:kicked','error']
+        .forEach(e => socket.off(e))
       clearTimeout(timerRef.current)
+      clearInterval(countdownRef.current)
     }
-  }, [socket, name, sessionCode])
+  }, [socket, initialName, sessionCode])
 
   const submitAnswer = (answerId) => {
-    if (selectedAnswer || !question) return
+    if (selectedAnswer || !question || question.type === 'multiple_select') return
     setSelectedAnswer(answerId)
-    socket?.emit('participant:answer', {
-      sessionCode,
-      questionId: question.id,
-      answerId
-    })
+    socket?.emit('participant:answer', { sessionCode, questionId: question.id, answerId })
   }
 
-  if (!name) {
-    navigate(`/join/${sessionCode}`)
-    return null
+  const toggleMultiAnswer = (answerId) => {
+    if (selectedAnswer) return
+    setSelectedAnswers(prev => {
+      const next = prev.includes(answerId) ? prev.filter(x => x !== answerId) : [...prev, answerId]
+      // Auto-submit after 1.5s of no changes
+      clearTimeout(multiSubmitTimer.current)
+      multiSubmitTimer.current = setTimeout(() => {
+        if (next.length > 0) {
+          setSelectedAnswer('submitted')
+          socket?.emit('participant:answer', { sessionCode, questionId: question.id, answerIds: next })
+        }
+      }, 1500)
+      return next
+    })
   }
 
   const timerPct = question ? (timeLeft / question.timeLimit) * 100 : 100
 
-  // ─── JOINING ───
+  if (!initialName) { navigate(`/join/${sessionCode}`); return null }
+
+  // ── JOINING ──
   if (phase === 'joining') return (
-    <div className="min-h-screen flex items-center justify-center">
+    <div className="min-h-screen page-bg flex items-center justify-center">
       <div className="text-center">
-        <div className="w-12 h-12 border-2 border-electric-blue border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-        <p className="text-white font-medium">Joining session...</p>
+        <div className="w-14 h-14 border-3 rounded-full animate-spin mx-auto mb-4"
+          style={{ borderColor: 'var(--paper)', borderTopColor: 'var(--blue-vivid)', borderWidth: 3 }} />
+        <p className="font-medium text-[var(--ink)]">Joining session...</p>
       </div>
     </div>
   )
 
-  // ─── WAITING ───
+  // ── WAITING ──
   if (phase === 'waiting') return (
-    <div className="min-h-screen grid-bg flex items-center justify-center px-4">
-      <div className="text-center animate-slide-up">
-        <div className="text-7xl mb-4 animate-float">{avatar}</div>
-        <h2 className="font-display font-bold text-3xl text-white mb-2">{name}</h2>
-        <p className="text-navy-300 mb-6">{quizTitle}</p>
-        <div className="glass rounded-2xl px-8 py-4 inline-flex items-center gap-3">
-          <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-          <span className="text-white">Waiting for host to start...</span>
+    <div className="min-h-screen page-bg flex items-center justify-center px-4">
+      <div className="text-center anim-fade-up">
+        <div className="text-7xl mb-4 anim-float">{myAvatar}</div>
+        <h2 className="font-display font-bold text-3xl text-[var(--ink)] mb-1">{myName}</h2>
+        {quizTitle && <p className="text-[var(--slate)] mb-6">{quizTitle}</p>}
+        <div className="surface inline-flex items-center gap-3 px-6 py-4">
+          <div className="w-2.5 h-2.5 rounded-full animate-pulse" style={{ background: 'var(--accent-green)' }} />
+          <span className="font-medium text-[var(--ink)]">Waiting for host to start...</span>
         </div>
-        <p className="text-navy-400 text-sm mt-4">Score: <span className="text-white font-mono">{score}</span></p>
+        <p className="text-sm text-[var(--slate)] mt-4">
+          Score: <span className="font-mono font-bold text-[var(--ink)]">{score}</span>
+        </p>
       </div>
     </div>
   )
 
-  // ─── ACTIVE QUESTION ───
+  // ── COUNTDOWN ──
+  if (phase === 'countdown') return (
+    <div className="min-h-screen page-bg flex items-center justify-center">
+      <div className="text-center anim-scale-in">
+        <p className="text-[var(--slate)] font-semibold uppercase tracking-wider text-sm mb-1">
+          Question {qIndex + 1} of {totalQs}
+        </p>
+        <div className="font-display font-bold text-[9rem] leading-none"
+          style={{
+            color: 'var(--blue-vivid)',
+            textShadow: '0 0 50px rgba(0,87,255,0.25)',
+            animation: 'countdownBeat 1s ease-in-out infinite'
+          }}
+          key={countdown}>
+          {countdown}
+        </div>
+        <p className="text-[var(--slate)] text-lg mt-2">Get ready!</p>
+      </div>
+    </div>
+  )
+
+  // ── ACTIVE QUESTION ──
   if (phase === 'question' && question) return (
-    <div className="min-h-screen grid-bg flex flex-col p-4">
+    <div className="min-h-screen page-bg flex flex-col px-4 py-4">
       {/* Timer bar */}
-      <div className="h-1.5 bg-navy-800 rounded-full mb-4 overflow-hidden">
-        <div className={`h-full rounded-full transition-all duration-200 ${
-          timeLeft <= 5 ? 'bg-accent-coral' : 'bg-electric-blue'
-        }`} style={{ width: `${timerPct}%` }} />
+      <div className="progress-bar mb-3">
+        <div className={`progress-fill ${timerPct < 25 ? 'danger' : ''}`}
+          style={{ width: `${timerPct}%` }} />
       </div>
 
-      <div className="flex items-center justify-between text-sm text-navy-400 mb-4">
-        <span className="font-mono">{questionIndex + 1}/{totalQuestions}</span>
-        <div className={`flex items-center gap-1 font-mono font-bold text-xl ${
-          timeLeft <= 5 ? 'text-accent-coral' : 'text-white'
-        }`}>
-          <Clock size={18} />
+      <div className="flex items-center justify-between text-sm mb-4">
+        <span className="font-mono font-semibold" style={{ color: 'var(--slate)' }}>
+          {qIndex + 1}/{totalQs}
+        </span>
+        <div className={`flex items-center gap-1.5 font-mono font-bold text-2xl ${timeLeft <= 5 ? 'anim-countdown-beat' : ''}`}
+          style={{ color: timeLeft <= 5 ? 'var(--accent-coral)' : 'var(--ink)' }}>
+          <Clock size={20} />
           {timeLeft}
         </div>
-        <span className="font-mono">{score} pts</span>
+        <span className="font-mono font-bold" style={{ color: 'var(--blue-vivid)' }}>
+          {score.toLocaleString()} pts
+        </span>
       </div>
 
-      {/* Question */}
-      <div className="card mb-4 text-center flex-shrink-0">
+      {/* Question card */}
+      <div className="surface p-5 mb-4 text-center flex-shrink-0">
         {question.image && (
-          <img src={question.image} alt="" className="w-full max-h-40 object-cover rounded-xl mb-3" />
+          <img src={question.image} alt="" className="w-full max-h-36 object-cover rounded-2xl mb-3" />
         )}
-        <p className="font-display font-bold text-xl text-white leading-tight">{question.text}</p>
+        <h2 className="font-display font-bold text-xl text-[var(--ink)] leading-tight">
+          {question.text}
+        </h2>
+        {question.type === 'multiple_select' && (
+          <p className="text-xs text-[var(--slate)] mt-2">Select all that apply — auto-submits after 1.5s</p>
+        )}
       </div>
 
       {/* Options */}
-      <div className="grid grid-cols-1 gap-3 flex-1">
+      <div className="flex-1 flex flex-col gap-3">
         {question.options.map((opt, i) => {
-          const colors = ANSWER_COLORS[i]
-          const isSelected = selectedAnswer === opt.id
+          const s = OPT_STYLES[i % OPT_STYLES.length]
+          const isSelected = question.type === 'multiple_select'
+            ? selectedAnswers.includes(opt.id)
+            : selectedAnswer === opt.id
+          const isDisabled = question.type !== 'multiple_select'
+            ? Boolean(selectedAnswer)
+            : selectedAnswer === 'submitted'
+
           return (
             <button
               key={opt.id}
-              onClick={() => submitAnswer(opt.id)}
-              disabled={!!selectedAnswer}
-              className={`answer-option flex items-center gap-4 bg-gradient-to-br border text-left transition-all duration-200 active:scale-[0.98] ${
-                isSelected ? colors.selected : colors.base
-              } ${selectedAnswer && !isSelected ? 'opacity-50' : ''}`}
+              onClick={() => question.type === 'multiple_select' ? toggleMultiAnswer(opt.id) : submitAnswer(opt.id)}
+              disabled={isDisabled}
+              className={`answer-opt ${s.base} ${isSelected ? 'selected' : ''} ${isDisabled && !isSelected ? 'disabled' : ''}`}
+              style={{
+                borderColor: isSelected ? s.border : 'var(--paper)',
+                background: isSelected ? s.selectedBg : 'white',
+                opacity: isDisabled && !isSelected ? 0.5 : 1
+              }}
             >
-              <span className={`w-9 h-9 rounded-xl flex items-center justify-center font-mono font-bold flex-shrink-0 ${
-                isSelected ? colors.letter : 'bg-white/10 text-white'
-              }`}>
-                {String.fromCharCode(65 + i)}
+              <span className="w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold text-white flex-shrink-0"
+                style={{ background: isSelected ? s.letterBg : 'var(--paper)', color: isSelected ? 'white' : 'var(--slate)' }}>
+                {LETTERS[i]}
               </span>
-              <span className="text-white font-medium">{opt.text}</span>
+              <span className="font-medium text-[var(--ink)] text-left">{opt.text}</span>
+              {isSelected && question.type === 'multiple_select' && (
+                <CheckCircle size={18} className="ml-auto flex-shrink-0" style={{ color: s.accent }} />
+              )}
             </button>
           )
         })}
@@ -220,109 +315,163 @@ export default function PlayPage() {
     </div>
   )
 
-  // ─── ANSWERED ───
+  // ── ANSWERED ──
   if (phase === 'answered') return (
-    <div className="min-h-screen grid-bg flex items-center justify-center px-4">
-      <div className="text-center animate-pop">
+    <div className="min-h-screen page-bg flex items-center justify-center px-4">
+      <div className="text-center anim-pop w-full max-w-sm">
         {answerResult?.tooLate ? (
           <>
-            <div className="text-7xl mb-4">⏰</div>
-            <h2 className="font-display font-bold text-2xl text-white mb-2">Too slow!</h2>
-            <p className="text-navy-300">Time ran out</p>
+            <div className="text-6xl mb-4">⏰</div>
+            <h2 className="font-display font-bold text-2xl text-[var(--ink)] mb-1">Too slow!</h2>
+            <p className="text-[var(--slate)]">Time ran out before you answered</p>
           </>
         ) : answerResult?.noAnswer ? (
           <>
-            <div className="text-7xl mb-4">😅</div>
-            <h2 className="font-display font-bold text-2xl text-white mb-2">No answer</h2>
-            <p className="text-navy-300">You didn't answer in time</p>
+            <div className="text-6xl mb-4">😶</div>
+            <h2 className="font-display font-bold text-2xl text-[var(--ink)] mb-1">No answer</h2>
+            <p className="text-[var(--slate)]">You didn't answer this one</p>
           </>
         ) : answerResult?.isCorrect ? (
           <>
-            <div className="text-7xl mb-4 animate-float">🎯</div>
-            <h2 className="font-display font-bold text-3xl text-green-400 mb-2">Correct!</h2>
-            <div className="glass rounded-2xl px-8 py-4 inline-block mb-3">
-              <p className="text-3xl font-mono font-bold text-accent-gold">+{answerResult.pointsEarned}</p>
-              <p className="text-navy-300 text-sm">points</p>
+            <div className="text-6xl mb-4 anim-float">🎯</div>
+            <h2 className="font-display font-bold text-3xl mb-3" style={{ color: 'var(--accent-green)' }}>
+              Correct!
+            </h2>
+            <div className="surface p-5 mb-3 inline-block">
+              <p className="font-mono font-bold text-4xl" style={{ color: 'var(--blue-vivid)' }}>
+                +{answerResult.pointsEarned}
+              </p>
+              <p className="text-[var(--slate)] text-sm">points earned</p>
             </div>
-            <p className="text-navy-300 text-sm">{answerResult.timeTaken?.toFixed(1)}s — Total: {score} pts</p>
+            <p className="text-sm text-[var(--slate)]">
+              {answerResult.timeTaken?.toFixed(1)}s · Total:{' '}
+              <span className="font-mono font-bold text-[var(--ink)]">{score.toLocaleString()}</span>
+            </p>
           </>
         ) : (
           <>
-            <div className="text-7xl mb-4">😕</div>
-            <h2 className="font-display font-bold text-3xl text-accent-coral mb-2">Wrong</h2>
-            <p className="text-navy-300">No points this round</p>
-            <p className="text-navy-400 text-sm mt-2">Total: {score} pts</p>
+            <div className="text-6xl mb-4">😕</div>
+            <h2 className="font-display font-bold text-3xl mb-2" style={{ color: 'var(--accent-coral)' }}>
+              Not quite
+            </h2>
+            <p className="text-[var(--slate)] mb-2">That wasn't right this time</p>
+            <p className="text-sm text-[var(--slate)]">
+              Total: <span className="font-mono font-bold text-[var(--ink)]">{score.toLocaleString()}</span>
+            </p>
           </>
         )}
-        <div className="mt-6 flex items-center justify-center gap-2 text-navy-400 text-sm">
-          <div className="w-2 h-2 bg-electric-blue rounded-full animate-pulse" />
+
+        <div className="flex items-center justify-center gap-2 mt-6 text-[var(--slate)] text-sm">
+          <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: 'var(--blue-vivid)' }} />
           Waiting for next question...
         </div>
       </div>
     </div>
   )
 
-  // ─── LEADERBOARD ───
+  // ── LEADERBOARD ──
   if (phase === 'leaderboard') return (
-    <div className="min-h-screen grid-bg p-4 flex flex-col items-center justify-center">
-      <Trophy size={36} className="text-accent-gold mb-3" />
-      <h2 className="font-display font-bold text-2xl text-white mb-1">Leaderboard</h2>
-      {myRank && <p className="text-navy-300 text-sm mb-5">You're ranked <span className="text-electric-blue font-bold">#{myRank}</span></p>}
-
-      <div className="w-full max-w-sm space-y-2">
-        {leaderboard.slice(0, 8).map((p, i) => (
-          <div key={p.name} className={`leaderboard-item rank-${i + 1} ${p.name === name ? 'ring-1 ring-electric-blue' : ''}`}>
-            <span className="w-8 text-center font-bold text-sm text-navy-400">
-              {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`}
-            </span>
-            <span className="text-xl">{p.avatar}</span>
-            <span className={`flex-1 font-medium truncate ${p.name === name ? 'text-electric-blue' : 'text-white'}`}>
-              {p.name} {p.name === name && '(you)'}
-            </span>
-            <span className="font-mono font-bold text-white text-sm">{p.score.toLocaleString()}</span>
-          </div>
-        ))}
-      </div>
-
-      <div className="mt-6 flex items-center gap-2 text-navy-400 text-sm">
-        <div className="w-2 h-2 bg-electric-blue rounded-full animate-pulse" />
-        Waiting for host...
-      </div>
-    </div>
+    <ParticipantLeaderboard
+      leaderboard={leaderboard}
+      myName={myName}
+      myRank={myRank}
+      score={score}
+      isFinished={false}
+    />
   )
 
-  // ─── FINISHED ───
+  // ── FINISHED ──
   if (phase === 'finished') return (
-    <div className="min-h-screen grid-bg p-4 flex flex-col items-center justify-center">
-      <div className="text-5xl mb-4">🎉</div>
-      <h2 className="font-display font-bold text-3xl text-white mb-1">Quiz Complete!</h2>
-      {myRank && <p className="text-electric-blue font-bold text-xl mb-5">You ranked #{myRank}</p>}
-
-      <div className="glass rounded-2xl px-8 py-4 text-center mb-6">
-        <p className="text-4xl font-mono font-bold text-accent-gold">{score.toLocaleString()}</p>
-        <p className="text-navy-300 text-sm mt-1">Final Score</p>
-      </div>
-
-      <div className="w-full max-w-sm space-y-2 mb-6">
-        {leaderboard.slice(0, 5).map((p, i) => (
-          <div key={p.name} className={`leaderboard-item rank-${i + 1} ${p.name === name ? 'ring-1 ring-electric-blue' : ''}`}>
-            <span className="w-8 text-center font-bold">
-              {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`}
-            </span>
-            <span className="text-xl">{p.avatar}</span>
-            <span className={`flex-1 font-medium truncate ${p.name === name ? 'text-electric-blue' : 'text-white'}`}>
-              {p.name} {p.name === name && '(you)'}
-            </span>
-            <span className="font-mono font-bold text-white">{p.score.toLocaleString()}</span>
-          </div>
-        ))}
-      </div>
-
-      <button onClick={() => navigate('/join')} className="btn-primary px-8 py-3">
-        Play Another Quiz
-      </button>
-    </div>
+    <>
+      {myRank === 1 && <Confetti />}
+      <ParticipantLeaderboard
+        leaderboard={leaderboard}
+        myName={myName}
+        myRank={myRank}
+        score={score}
+        isFinished={true}
+        onPlayAgain={() => navigate('/join')}
+      />
+    </>
   )
 
   return null
+}
+
+function ParticipantLeaderboard({ leaderboard, myName, myRank, score, isFinished, onPlayAgain }) {
+  const [visible, setVisible] = useState([])
+
+  useEffect(() => {
+    setVisible([])
+    const timers = leaderboard.map((_, i) =>
+      setTimeout(() => setVisible(v => [...v, i]), i * 150 + 300)
+    )
+    return () => timers.forEach(clearTimeout)
+  }, [leaderboard])
+
+  const myEntry = leaderboard.find(p => p.name === myName)
+  const rankEmoji = (r) => r === 1 ? '🥇' : r === 2 ? '🥈' : r === 3 ? '🥉' : `#${r}`
+
+  return (
+    <div className="min-h-screen page-bg px-4 py-8 flex flex-col items-center">
+      {isFinished && myRank === 1 && (
+        <div className="anim-pop text-center mb-4">
+          <div className="text-5xl mb-1">🏆</div>
+          <div className="font-display font-bold text-2xl" style={{ color: 'var(--accent-gold)' }}>
+            You won!
+          </div>
+        </div>
+      )}
+
+      <Trophy size={30} className="mb-2" style={{ color: 'var(--accent-gold)' }} />
+      <h2 className="font-display font-bold text-2xl text-[var(--ink)] mb-1">
+        {isFinished ? 'Final Results' : 'Leaderboard'}
+      </h2>
+      {myRank && (
+        <p className="text-sm text-[var(--slate)] mb-5">
+          You're ranked{' '}
+          <span className="font-bold" style={{ color: 'var(--blue-vivid)' }}>#{myRank}</span>
+          {' '}with{' '}
+          <span className="font-mono font-bold text-[var(--ink)]">{score.toLocaleString()} pts</span>
+        </p>
+      )}
+
+      <div className="w-full max-w-sm space-y-2 mb-6">
+        {leaderboard.slice(0, 8).map((p, i) => (
+          <div key={p.name}
+            className={`lb-item rank-${i + 1} ${p.name === myName ? 'is-me' : ''}`}
+            style={{
+              opacity: visible.includes(i) ? 1 : 0,
+              transform: visible.includes(i) ? 'translateY(0)' : 'translateY(30px)',
+              transition: 'all 0.7s cubic-bezier(0.34,1.2,0.64,1)',
+              ...(p.name === myName && i === 0 ? { animation: 'winnerGlow 2s ease-in-out infinite' } : {})
+            }}>
+            <span className="font-bold text-lg w-10 text-center flex-shrink-0"
+              style={{ color: i === 0 ? 'var(--accent-gold)' : i === 1 ? '#94A3B8' : i === 2 ? '#CD7F32' : 'var(--slate)' }}>
+              {rankEmoji(i + 1)}
+            </span>
+            <span className="text-xl">{p.avatar}</span>
+            <span className={`flex-1 font-medium truncate ${p.name === myName ? 'font-bold' : ''}`}
+              style={{ color: p.name === myName ? 'var(--blue-vivid)' : 'var(--ink)' }}>
+              {p.name} {p.name === myName && '(you)'}
+            </span>
+            <span className="font-mono font-bold text-sm text-[var(--ink)]">
+              {p.score.toLocaleString()}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {isFinished ? (
+        <button onClick={onPlayAgain} className="btn-primary gap-2 px-8 py-3">
+          <Zap size={16} fill="white" /> Play Another Quiz
+        </button>
+      ) : (
+        <div className="flex items-center gap-2 text-sm text-[var(--slate)]">
+          <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: 'var(--blue-vivid)' }} />
+          Waiting for host...
+        </div>
+      )}
+    </div>
+  )
 }

@@ -2,7 +2,11 @@ const mongoose = require('mongoose');
 
 const questionSchema = new mongoose.Schema({
   id: { type: String, required: true },
-  type: { type: String, enum: ['multiple_choice', 'true_false', 'poll', 'open_ended'], default: 'multiple_choice' },
+  type: {
+    type: String,
+    enum: ['multiple_choice', 'multiple_select', 'true_false', 'poll', 'open_ended'],
+    default: 'multiple_choice'
+  },
   text: { type: String, required: true },
   image: { type: String, default: '' },
   options: [{

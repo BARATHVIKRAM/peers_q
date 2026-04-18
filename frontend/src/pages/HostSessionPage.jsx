@@ -1,77 +1,87 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Users, Play, SkipForward, Trophy, Zap, Copy, ChevronRight, BarChart2, Clock, X } from 'lucide-react'
+import { Users, Play, SkipForward, Trophy, Zap, Copy, ChevronRight, Clock, X, StopCircle, QrCode } from 'lucide-react'
 import { useSocket } from '../contexts/SocketContext'
 import toast from 'react-hot-toast'
 
-const ANSWER_COLORS = [
-  'from-blue-600/30 to-blue-500/20 border-blue-400/40',
-  'from-purple-600/30 to-purple-500/20 border-purple-400/40',
-  'from-amber-600/30 to-amber-500/20 border-amber-400/40',
-  'from-rose-600/30 to-rose-500/20 border-rose-400/40'
+const OPT_COLORS = [
+  { bg: 'rgba(0,87,255,0.08)', border: '#0057FF', barBg: 'rgba(0,87,255,0.15)', barFill: '#0057FF' },
+  { bg: 'rgba(139,92,246,0.08)', border: '#8B5CF6', barBg: 'rgba(139,92,246,0.15)', barFill: '#8B5CF6' },
+  { bg: 'rgba(245,158,11,0.08)', border: '#F59E0B', barBg: 'rgba(245,158,11,0.15)', barFill: '#F59E0B' },
+  { bg: 'rgba(239,68,68,0.08)', border: '#EF4444', barBg: 'rgba(239,68,68,0.15)', barFill: '#EF4444' },
 ]
+const LETTERS = ['A', 'B', 'C', 'D']
 
 export default function HostSessionPage() {
   const { sessionCode } = useParams()
   const { socket } = useSocket()
   const navigate = useNavigate()
 
-  const [phase, setPhase] = useState('lobby') // lobby | question | results | leaderboard | finished
+  const [phase, setPhase] = useState('lobby')
   const [session, setSession] = useState(null)
   const [quiz, setQuiz] = useState(null)
   const [participants, setParticipants] = useState([])
-  const [currentQuestion, setCurrentQuestion] = useState(null)
-  const [questionIndex, setQuestionIndex] = useState(0)
-  const [totalQuestions, setTotalQuestions] = useState(0)
+  const [currentQ, setCurrentQ] = useState(null)
+  const [qIndex, setQIndex] = useState(0)
+  const [totalQs, setTotalQs] = useState(0)
   const [answerUpdate, setAnswerUpdate] = useState({ answerCount: 0, totalParticipants: 0 })
-  const [questionResults, setQuestionResults] = useState(null)
+  const [qResults, setQResults] = useState(null)
   const [leaderboard, setLeaderboard] = useState([])
+  const [prevLeaderboard, setPrevLeaderboard] = useState([])
   const [timeLeft, setTimeLeft] = useState(0)
-  const [answerStats, setAnswerStats] = useState({})
+  const [countdown, setCountdown] = useState(null)
+  const [showQR, setShowQR] = useState(false)
   const timerRef = useRef(null)
+  const countdownRef = useRef(null)
 
   useEffect(() => {
     if (!socket) return
     socket.emit('host:join_session', { sessionCode })
 
     socket.on('host:session_ready', ({ session: s, quiz: q, participants: p }) => {
-      setSession(s)
-      setQuiz(q)
-      setParticipants(p || [])
-      setTotalQuestions(q?.questions?.length || 0)
+      setSession(s); setQuiz(q); setParticipants(p || [])
+      setTotalQs(q?.questions?.length || 0)
     })
-
     socket.on('participants:updated', ({ participants: p }) => setParticipants(p))
 
+    socket.on('question:countdown', ({ seconds, questionIndex, questionNumber, totalQuestions }) => {
+      setPhase('countdown')
+      setQIndex(questionIndex)
+      setTotalQs(totalQuestions)
+      let s = seconds
+      setCountdown(s)
+      clearInterval(countdownRef.current)
+      countdownRef.current = setInterval(() => {
+        s--
+        setCountdown(s)
+        if (s <= 0) clearInterval(countdownRef.current)
+      }, 1000)
+    })
+
     socket.on('question:start_host', ({ question, questionIndex: qi, totalQuestions: tq, startTime }) => {
-      setCurrentQuestion(question)
-      setQuestionIndex(qi)
-      setTotalQuestions(tq)
+      setCurrentQ(question); setQIndex(qi); setTotalQs(tq)
       setPhase('question')
       setAnswerUpdate({ answerCount: 0, totalParticipants: participants.length })
-      setAnswerStats({})
-
+      clearTimeout(timerRef.current)
       const start = new Date(startTime)
-      const total = question.timeLimit
       const tick = () => {
-        const elapsed = (Date.now() - start.getTime()) / 1000
-        const remaining = Math.max(0, total - elapsed)
+        const remaining = Math.max(0, question.timeLimit - (Date.now() - start) / 1000)
         setTimeLeft(Math.ceil(remaining))
         if (remaining > 0) timerRef.current = setTimeout(tick, 200)
       }
       tick()
     })
 
-    socket.on('host:answer_update', (data) => setAnswerUpdate(data))
+    socket.on('host:answer_update', data => setAnswerUpdate(data))
 
-    socket.on('question:ended', ({ correctAnswerId, answerStats: stats, totalAnswers, explanation }) => {
+    socket.on('question:ended', ({ correctAnswerId, answerStats, totalAnswers, explanation }) => {
       clearTimeout(timerRef.current)
       setPhase('results')
-      setAnswerStats(stats)
-      setQuestionResults({ correctAnswerId, totalAnswers, explanation })
+      setQResults({ correctAnswerId, answerStats, totalAnswers, explanation })
     })
 
     socket.on('leaderboard:show', ({ leaderboard: lb }) => {
+      setPrevLeaderboard(lb => lb)
       setLeaderboard(lb)
       setPhase('leaderboard')
     })
@@ -84,276 +94,381 @@ export default function HostSessionPage() {
     socket.on('error', ({ message }) => toast.error(message))
 
     return () => {
-      socket.off('host:session_ready')
-      socket.off('participants:updated')
-      socket.off('question:start_host')
-      socket.off('host:answer_update')
-      socket.off('question:ended')
-      socket.off('leaderboard:show')
-      socket.off('quiz:finished')
-      socket.off('error')
+      ['host:session_ready','participants:updated','question:countdown','question:start_host',
+       'host:answer_update','question:ended','leaderboard:show','quiz:finished','error']
+        .forEach(e => socket.off(e))
       clearTimeout(timerRef.current)
+      clearInterval(countdownRef.current)
     }
   }, [socket, sessionCode])
 
-  const startQuiz = () => socket?.emit('host:start_quiz', { sessionCode })
+  const startAndNext = () => { socket?.emit('host:start_quiz', { sessionCode }); socket?.emit('host:next_question', { sessionCode }) }
   const nextQuestion = () => socket?.emit('host:next_question', { sessionCode })
   const endQuestion = () => socket?.emit('host:end_question', { sessionCode })
-  const showLeaderboard = () => socket?.emit('host:show_leaderboard', { sessionCode })
+  const endQuiz = () => { if (confirm('End quiz now?')) socket?.emit('host:end_quiz', { sessionCode }) }
   const copyCode = () => { navigator.clipboard.writeText(sessionCode); toast.success('Code copied!') }
 
-  const progressPct = currentQuestion ? (timeLeft / currentQuestion.timeLimit) * 100 : 100
+  const timerPct = currentQ ? (timeLeft / currentQ.timeLimit) * 100 : 100
+  const isLastQ = qIndex + 1 >= totalQs
 
   if (!session) return (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="flex flex-col items-center gap-4">
-        <div className="w-12 h-12 border-2 border-electric-blue border-t-transparent rounded-full animate-spin" />
-        <p className="text-navy-300">Connecting to session...</p>
+    <div className="min-h-screen page-bg flex items-center justify-center">
+      <div className="text-center">
+        <div className="w-12 h-12 border-3 rounded-full animate-spin mx-auto mb-4"
+          style={{ borderColor: 'var(--paper)', borderTopColor: 'var(--blue-vivid)', borderWidth: 3 }} />
+        <p className="text-[var(--slate)]">Connecting to session...</p>
       </div>
     </div>
   )
 
-  // ──────────────────────────────────────────
+  // ─────────────────────────────────────
   // LOBBY
-  // ──────────────────────────────────────────
+  // ─────────────────────────────────────
   if (phase === 'lobby') return (
-    <div className="min-h-screen grid-bg p-4">
-      <div className="max-w-5xl mx-auto">
+    <div className="min-h-screen page-bg">
+      <div className="max-w-5xl mx-auto px-6 py-8">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-electric-blue rounded-lg flex items-center justify-center">
-              <Zap size={16} className="text-navy-950" fill="currentColor" />
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl flex items-center justify-center"
+              style={{ background: 'linear-gradient(135deg,#0057FF,#003ABF)' }}>
+              <Zap size={20} className="text-white" fill="white" />
             </div>
-            <span className="font-display font-bold text-lg">PeersQ Host</span>
+            <div>
+              <h1 className="font-display font-bold text-xl text-[var(--ink)]">{quiz?.title}</h1>
+              <p className="text-sm text-[var(--slate)]">{quiz?.questions?.length} questions</p>
+            </div>
           </div>
-          <span className="text-navy-400 text-sm">{quiz?.title}</span>
+          <button onClick={endQuiz} className="btn-ghost text-sm gap-1.5" style={{ color: 'var(--accent-coral)' }}>
+            <X size={15} /> End Session
+          </button>
         </div>
 
         <div className="grid lg:grid-cols-2 gap-6">
-          {/* Code + QR */}
-          <div className="card text-center">
-            <p className="text-navy-400 text-sm mb-3">Share this code to join</p>
-            <div className="flex items-center justify-center gap-3 mb-4">
-              <span className="font-mono font-bold text-5xl text-white tracking-widest glow-text">
+          {/* Code card */}
+          <div className="surface p-8 text-center">
+            <p className="text-sm font-semibold text-[var(--slate)] mb-2">JOIN WITH CODE</p>
+            <div className="flex items-center justify-center gap-3 mb-3">
+              <span className="font-mono font-bold text-[clamp(2.5rem,8vw,4rem)] text-[var(--ink)] tracking-widest"
+                style={{ letterSpacing: '0.15em' }}>
                 {sessionCode}
               </span>
-              <button onClick={copyCode} className="glass p-2 rounded-xl text-electric-blue hover:border-electric-blue/40 transition-all">
-                <Copy size={18} />
+              <button onClick={copyCode}
+                className="w-10 h-10 rounded-xl flex items-center justify-center transition-all hover:scale-110"
+                style={{ background: 'rgba(0,87,255,0.08)' }}>
+                <Copy size={16} style={{ color: 'var(--blue-vivid)' }} />
               </button>
             </div>
-            <p className="text-navy-400 text-xs mb-4">or go to <span className="text-electric-blue">{window.location.host}/join</span></p>
-            {session.qrCode && (
-              <div className="inline-block bg-white p-3 rounded-2xl">
-                <img src={session.qrCode} alt="QR Code" className="w-40 h-40" />
+
+            <p className="text-xs text-[var(--slate)] mb-5">
+              or visit <span style={{ color: 'var(--blue-vivid)' }}>{window.location.host}/join</span>
+            </p>
+
+            {/* QR toggle */}
+            <button onClick={() => setShowQR(!showQR)}
+              className="btn-secondary gap-2 text-sm mx-auto mb-4">
+              <QrCode size={15} /> {showQR ? 'Hide' : 'Show'} QR Code
+            </button>
+
+            {showQR && session.qrCode && (
+              <div className="mt-2 inline-block p-4 rounded-2xl bg-white shadow-blue-sm">
+                <img src={session.qrCode} alt="QR Code" className="w-44 h-44" />
               </div>
             )}
           </div>
 
           {/* Participants */}
-          <div className="card flex flex-col">
+          <div className="surface p-6 flex flex-col">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <Users size={18} className="text-electric-blue" />
-                <span className="font-display font-semibold text-white">{participants.length} Joined</span>
+                <Users size={18} style={{ color: 'var(--blue-vivid)' }} />
+                <span className="font-display font-bold text-lg text-[var(--ink)]">
+                  {participants.length} joined
+                </span>
               </div>
-              <span className="text-navy-400 text-sm">max 50</span>
+              <span className="chip chip-blue">max 50</span>
             </div>
-            <div className="flex-1 overflow-y-auto max-h-56 space-y-2 pr-1">
+
+            <div className="flex-1 overflow-y-auto max-h-52 space-y-1.5 pr-1 mb-4">
               {participants.length === 0 ? (
-                <div className="text-center py-8 text-navy-400 text-sm">
-                  Waiting for participants to join...
+                <div className="text-center py-10">
+                  <div className="text-4xl mb-2">👋</div>
+                  <p className="text-sm text-[var(--slate)]">Waiting for participants...</p>
+                  <p className="text-xs text-[var(--slate-light)] mt-1">Share the code above</p>
                 </div>
               ) : (
                 participants.map((p, i) => (
-                  <div key={p.id} className="flex items-center gap-3 glass rounded-xl p-2.5 animate-slide-in">
-                    <span className="text-2xl">{p.avatar}</span>
-                    <span className="text-white font-medium text-sm">{p.name}</span>
-                    {i === participants.length - 1 && (
-                      <span className="ml-auto text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">NEW</span>
+                  <div key={p.id} className="flex items-center gap-2.5 px-3 py-2 rounded-xl transition-all anim-slide-right"
+                    style={{ background: 'var(--off-white)', animationDelay: `${i * 0.04}s` }}>
+                    <span className="text-xl">{p.avatar}</span>
+                    <span className="text-sm font-medium text-[var(--ink)] flex-1 truncate">{p.name || 'Anonymous'}</span>
+                    {i >= participants.length - 3 && (
+                      <span className="chip chip-green text-xs">new</span>
                     )}
                   </div>
                 ))
               )}
             </div>
-            <button
-              onClick={() => { startQuiz(); nextQuestion() }}
-              disabled={participants.length === 0}
-              className="btn-primary w-full flex items-center justify-center gap-2 py-4 mt-4 text-base disabled:opacity-40"
-            >
-              <Play size={20} /> Start Quiz ({quiz?.questions?.length} questions)
+
+            <button onClick={startAndNext} disabled={participants.length === 0}
+              className="btn-primary w-full py-4 text-base gap-2 disabled:opacity-40">
+              <Play size={20} fill="white" />
+              Start Quiz · {quiz?.questions?.length} Questions
             </button>
+            <p className="text-xs text-center text-[var(--slate)] mt-2">
+              Players without a name will get a default name
+            </p>
           </div>
         </div>
       </div>
     </div>
   )
 
-  // ──────────────────────────────────────────
+  // ─────────────────────────────────────
+  // 5s COUNTDOWN BUFFER
+  // ─────────────────────────────────────
+  if (phase === 'countdown') return (
+    <div className="min-h-screen page-bg flex items-center justify-center">
+      <div className="text-center anim-scale-in">
+        <p className="text-[var(--slate)] font-semibold mb-2 uppercase tracking-wider text-sm">
+          Question {qIndex + 1} of {totalQs}
+        </p>
+        <div className="font-display font-bold text-[10rem] leading-none text-[var(--ink)]"
+          style={{
+            color: 'var(--blue-vivid)',
+            textShadow: '0 0 60px rgba(0,87,255,0.3)',
+            animation: 'countdownBeat 1s ease-in-out infinite'
+          }}
+          key={countdown}>
+          {countdown}
+        </div>
+        <p className="text-[var(--slate)] text-lg mt-2">Get ready!</p>
+      </div>
+    </div>
+  )
+
+  // ─────────────────────────────────────
   // ACTIVE QUESTION
-  // ──────────────────────────────────────────
-  if (phase === 'question' && currentQuestion) return (
-    <div className="min-h-screen grid-bg p-4">
-      <div className="max-w-5xl mx-auto">
-        {/* Progress bar */}
-        <div className="h-1 bg-navy-800 rounded-full mb-4 overflow-hidden">
-          <div className="h-full bg-electric-blue transition-all duration-200 rounded-full"
-            style={{ width: `${progressPct}%` }} />
+  // ─────────────────────────────────────
+  if (phase === 'question' && currentQ) return (
+    <div className="min-h-screen page-bg">
+      <div className="max-w-4xl mx-auto px-6 py-6">
+        {/* Timer bar */}
+        <div className="progress-bar mb-4">
+          <div className={`progress-fill ${timerPct < 25 ? 'danger' : ''}`}
+            style={{ width: `${timerPct}%` }} />
         </div>
 
-        <div className="flex items-center justify-between mb-4 text-sm text-navy-400">
-          <span>Question {questionIndex + 1} / {totalQuestions}</span>
+        <div className="flex items-center justify-between mb-5 text-sm">
+          <span className="text-[var(--slate)] font-medium">
+            Q {qIndex + 1} / {totalQs}
+          </span>
+          <div className={`flex items-center gap-1.5 font-mono font-bold text-2xl ${timeLeft <= 5 ? 'anim-countdown-beat' : ''}`}
+            style={{ color: timeLeft <= 5 ? 'var(--accent-coral)' : 'var(--ink)' }}>
+            <Clock size={20} />
+            {timeLeft}s
+          </div>
           <div className="flex items-center gap-2">
-            <span>{answerUpdate.answerCount}/{answerUpdate.totalParticipants} answered</span>
-            <div className={`flex items-center gap-1 font-mono text-xl font-bold ${
-              timeLeft <= 5 ? 'text-accent-coral' : 'text-white'
-            }`}>
-              <Clock size={18} />
-              {timeLeft}s
-            </div>
+            <span className="text-[var(--slate)]">{answerUpdate.answerCount}/{answerUpdate.totalParticipants}</span>
+            <div className="chip chip-blue">{answerUpdate.percentage || 0}% answered</div>
           </div>
         </div>
 
         {/* Question */}
-        <div className="card mb-4">
-          {currentQuestion.image && (
-            <img src={currentQuestion.image} alt="" className="w-full max-h-48 object-cover rounded-xl mb-4" />
-          )}
-          <h2 className="font-display font-bold text-2xl text-white text-center">{currentQuestion.text}</h2>
+        <div className="surface p-6 mb-5 text-center">
+          {currentQ.image && <img src={currentQ.image} alt="" className="w-full max-h-44 object-cover rounded-2xl mb-4" />}
+          <h2 className="font-display font-bold text-2xl text-[var(--ink)]">{currentQ.text}</h2>
         </div>
 
-        {/* Options */}
-        <div className="grid grid-cols-2 gap-3 mb-4">
-          {currentQuestion.options.map((opt, i) => (
-            <div key={opt.id} className={`p-4 rounded-2xl border bg-gradient-to-br ${ANSWER_COLORS[i]} flex items-center gap-3`}>
-              <span className="w-8 h-8 bg-white/10 rounded-lg flex items-center justify-center font-mono font-bold text-white flex-shrink-0">
-                {String.fromCharCode(65 + i)}
-              </span>
-              <span className="text-white font-medium">{opt.text}</span>
-            </div>
-          ))}
+        {/* Options (host view) */}
+        <div className="grid grid-cols-2 gap-3 mb-5">
+          {currentQ.options.map((opt, i) => {
+            const c = OPT_COLORS[i % OPT_COLORS.length]
+            return (
+              <div key={opt.id} className="p-4 rounded-2xl border-2 flex items-center gap-3"
+                style={{ background: c.bg, borderColor: c.border + '50' }}>
+                <span className="w-8 h-8 rounded-xl flex items-center justify-center text-sm font-bold text-white flex-shrink-0"
+                  style={{ background: c.barFill }}>
+                  {LETTERS[i]}
+                </span>
+                <span className="font-medium text-[var(--ink)]">{opt.text}</span>
+                {opt.isCorrect && <span className="ml-auto chip chip-green text-xs">✓</span>}
+              </div>
+            )
+          })}
         </div>
 
         <div className="flex justify-center gap-3">
-          <button onClick={endQuestion} className="btn-secondary flex items-center gap-2 py-3">
+          <button onClick={endQuestion} className="btn-secondary gap-2 py-3">
             <SkipForward size={16} /> End Early
+          </button>
+          <button onClick={endQuiz} className="btn-ghost gap-1.5 text-sm" style={{ color: 'var(--accent-coral)' }}>
+            <StopCircle size={15} /> End Quiz
           </button>
         </div>
       </div>
     </div>
   )
 
-  // ──────────────────────────────────────────
+  // ─────────────────────────────────────
   // QUESTION RESULTS
-  // ──────────────────────────────────────────
+  // ─────────────────────────────────────
   if (phase === 'results') return (
-    <div className="min-h-screen grid-bg p-4">
-      <div className="max-w-3xl mx-auto">
-        <h2 className="font-display font-bold text-2xl text-white text-center mb-6">Question Results</h2>
+    <div className="min-h-screen page-bg">
+      <div className="max-w-2xl mx-auto px-6 py-8">
+        <h2 className="font-display font-bold text-2xl text-[var(--ink)] text-center mb-2">Answer Results</h2>
+        <p className="text-center text-[var(--slate)] text-sm mb-6">
+          {qResults?.totalAnswers || 0} of {participants.length} answered
+        </p>
 
-        <div className="card mb-4">
-          <h3 className="text-white font-medium text-center mb-5">{currentQuestion?.text}</h3>
+        <div className="surface p-6 mb-5">
+          <p className="font-medium text-[var(--ink)] text-center mb-5">{currentQ?.text}</p>
           <div className="space-y-3">
-            {currentQuestion?.options.map((opt, i) => {
-              const stat = answerStats[opt.id] || { count: 0 }
-              const total = Object.values(answerStats).reduce((s, v) => s + v.count, 0)
+            {currentQ?.options.map((opt, i) => {
+              const stat = qResults?.answerStats?.[opt.id] || { count: 0 }
+              const total = Object.values(qResults?.answerStats || {}).reduce((s, v) => s + v.count, 0)
               const pct = total > 0 ? Math.round((stat.count / total) * 100) : 0
-              const isCorrect = opt.id === questionResults?.correctAnswerId
+              const isCorrect = opt.id === qResults?.correctAnswerId
+              const c = OPT_COLORS[i % OPT_COLORS.length]
 
               return (
-                <div key={opt.id} className={`relative rounded-xl overflow-hidden border ${
-                  isCorrect ? 'border-green-400/60' : 'border-navy-600/40'
-                }`}>
-                  <div className={`absolute inset-0 transition-all duration-700 ${
-                    isCorrect ? 'bg-green-500/20' : 'bg-navy-700/40'
-                  }`} style={{ width: `${pct}%` }} />
-                  <div className="relative flex items-center gap-3 p-3">
-                    <span className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0 ${
-                      isCorrect ? 'bg-green-400 text-navy-950' : 'bg-navy-600 text-navy-300'
-                    }`}>{String.fromCharCode(65 + i)}</span>
-                    <span className={`flex-1 font-medium ${isCorrect ? 'text-green-300' : 'text-white'}`}>{opt.text}</span>
-                    <span className="text-white font-mono text-sm">{stat.count} ({pct}%)</span>
-                    {isCorrect && <span className="text-green-400 text-xs">✓ Correct</span>}
+                <div key={opt.id} className="relative rounded-2xl overflow-hidden border-2 transition-all"
+                  style={{ borderColor: isCorrect ? 'var(--accent-green)' : c.border + '40' }}>
+                  {/* Fill bar */}
+                  <div className="absolute inset-0 transition-all duration-700 rounded-2xl"
+                    style={{ width: `${pct}%`, background: isCorrect ? 'rgba(0,232,122,0.15)' : c.barBg }} />
+                  <div className="relative flex items-center gap-3 p-3.5">
+                    <span className="w-8 h-8 rounded-xl flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
+                      style={{ background: isCorrect ? 'var(--accent-green)' : c.barFill }}>
+                      {LETTERS[i]}
+                    </span>
+                    <span className="flex-1 font-medium" style={{ color: 'var(--ink)' }}>{opt.text}</span>
+                    <span className="font-mono text-sm font-bold text-[var(--ink)]">{stat.count} ({pct}%)</span>
+                    {isCorrect && <span className="chip chip-green text-xs">✓ correct</span>}
                   </div>
                 </div>
               )
             })}
           </div>
-          {questionResults?.explanation && (
-            <div className="mt-4 p-3 bg-electric-blue/10 border border-electric-blue/20 rounded-xl">
-              <p className="text-electric-blue text-sm">{questionResults.explanation}</p>
+          {qResults?.explanation && (
+            <div className="mt-4 p-3.5 rounded-2xl"
+              style={{ background: 'rgba(0,87,255,0.06)', border: '1px solid rgba(0,87,255,0.15)' }}>
+              <p className="text-sm" style={{ color: 'var(--blue-vivid)' }}>
+                💡 {qResults.explanation}
+              </p>
             </div>
           )}
         </div>
 
         <div className="flex justify-center gap-3">
-          <button onClick={showLeaderboard} className="btn-secondary flex items-center gap-2 py-3 px-6">
-            <Trophy size={16} /> Leaderboard
+          <button onClick={endQuiz} className="btn-ghost gap-1.5" style={{ color: 'var(--accent-coral)' }}>
+            <StopCircle size={15} /> End Quiz
           </button>
-          <button onClick={nextQuestion} className="btn-primary flex items-center gap-2 py-3 px-6">
-            {questionIndex + 1 >= totalQuestions ? 'Finish' : 'Next Question'}
+          <button onClick={nextQuestion} className="btn-primary gap-2 py-3 px-8">
+            {isLastQ ? 'Finish Quiz' : 'Next Question'}
             <ChevronRight size={16} />
           </button>
         </div>
+        <p className="text-center text-xs text-[var(--slate)] mt-3">Leaderboard auto-shows in 3.5s</p>
       </div>
     </div>
   )
 
-  // ──────────────────────────────────────────
-  // LEADERBOARD
-  // ──────────────────────────────────────────
+  // ─────────────────────────────────────
+  // LEADERBOARD (animated)
+  // ─────────────────────────────────────
   if (phase === 'leaderboard' || phase === 'finished') return (
-    <div className="min-h-screen grid-bg p-4">
-      <div className="max-w-2xl mx-auto">
+    <LeaderboardView
+      leaderboard={leaderboard}
+      phase={phase}
+      qIndex={qIndex}
+      totalQs={totalQs}
+      isLastQ={isLastQ}
+      onNext={nextQuestion}
+      onEnd={() => navigate('/dashboard')}
+      onEndQuiz={endQuiz}
+    />
+  )
+
+  return null
+}
+
+function LeaderboardView({ leaderboard, phase, qIndex, totalQs, isLastQ, onNext, onEnd, onEndQuiz }) {
+  const [displayed, setDisplayed] = useState([])
+
+  useEffect(() => {
+    // Stagger leaderboard entries appearing
+    setDisplayed([])
+    const timers = leaderboard.map((_, i) =>
+      setTimeout(() => setDisplayed(d => [...d, i]), i * 120 + 200)
+    )
+    return () => timers.forEach(clearTimeout)
+  }, [leaderboard])
+
+  const rankEmoji = (r) => r === 1 ? '🥇' : r === 2 ? '🥈' : r === 3 ? '🥉' : `#${r}`
+
+  return (
+    <div className="min-h-screen page-bg">
+      <div className="max-w-xl mx-auto px-6 py-8">
         <div className="text-center mb-6">
-          <Trophy size={40} className="text-accent-gold mx-auto mb-3" />
-          <h2 className="font-display font-bold text-3xl text-white">
-            {phase === 'finished' ? '🎉 Final Results!' : 'Leaderboard'}
+          <Trophy size={36} className="mx-auto mb-3" style={{ color: 'var(--accent-gold)' }} />
+          <h2 className="font-display font-bold text-3xl text-[var(--ink)]"
+            style={{ letterSpacing: '-0.02em' }}>
+            {phase === 'finished' ? 'Final Results!' : 'Leaderboard'}
           </h2>
           {phase !== 'finished' && (
-            <p className="text-navy-300 mt-1">After question {questionIndex + 1}</p>
+            <p className="text-[var(--slate)] text-sm mt-1">After question {qIndex + 1} of {totalQs}</p>
           )}
         </div>
 
         <div className="space-y-2 mb-6">
           {leaderboard.slice(0, 10).map((p, i) => (
-            <div key={p.name} className={`leaderboard-item rank-${i + 1} animate-slide-up`}
-              style={{ animationDelay: `${i * 0.05}s` }}>
-              <span className={`w-8 text-center font-display font-bold text-lg ${
-                i === 0 ? 'text-accent-gold' : i === 1 ? 'text-gray-300' : i === 2 ? 'text-amber-600' : 'text-navy-400'
-              }`}>
-                {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`}
+            <div key={p.name}
+              className={`lb-item rank-${i + 1} transition-all duration-700`}
+              style={{
+                opacity: displayed.includes(i) ? 1 : 0,
+                transform: displayed.includes(i) ? 'translateY(0)' : 'translateY(30px)',
+                transition: `all 0.6s cubic-bezier(0.34,1.2,0.64,1)`
+              }}>
+              <span className="font-display font-bold text-xl w-10 text-center flex-shrink-0"
+                style={{ color: i === 0 ? 'var(--accent-gold)' : i === 1 ? '#94A3B8' : i === 2 ? '#CD7F32' : 'var(--slate)' }}>
+                {rankEmoji(i + 1)}
               </span>
-              <span className="text-2xl">{p.avatar}</span>
+              <span className="text-2xl flex-shrink-0">{p.avatar}</span>
               <div className="flex-1 min-w-0">
-                <div className="font-semibold text-white truncate">{p.name}</div>
-                <div className="text-xs text-navy-400">{p.correctAnswers}/{p.totalAnswers} correct</div>
+                <p className="font-semibold text-[var(--ink)] truncate">{p.name}</p>
+                <p className="text-xs text-[var(--slate)]">
+                  {p.correctAnswers}/{p.totalAnswers} correct
+                  {p.streak > 1 && ` · 🔥 ${p.streak} streak`}
+                </p>
               </div>
-              <div className="text-right">
-                <div className="font-mono font-bold text-white">{p.score.toLocaleString()}</div>
-                <div className="text-xs text-navy-400">pts</div>
+              <div className="text-right flex-shrink-0">
+                <p className="font-mono font-bold text-[var(--ink)]">{p.score.toLocaleString()}</p>
+                <p className="text-xs text-[var(--slate)]">pts</p>
               </div>
             </div>
           ))}
         </div>
 
-        {phase === 'leaderboard' ? (
-          <div className="flex justify-center">
-            <button onClick={nextQuestion} className="btn-primary flex items-center gap-2 py-3 px-8">
-              {questionIndex + 1 >= totalQuestions ? 'End Quiz' : 'Next Question'}
-              <ChevronRight size={16} />
-            </button>
-          </div>
-        ) : (
-          <div className="flex justify-center gap-3">
-            <button onClick={() => navigate('/dashboard')} className="btn-secondary py-3 px-6">
+        <div className="flex justify-center gap-3">
+          {phase !== 'finished' && (
+            <>
+              <button onClick={onEndQuiz} className="btn-ghost gap-1.5 text-sm" style={{ color: 'var(--accent-coral)' }}>
+                <StopCircle size={15} /> End Quiz
+              </button>
+              <button onClick={onNext} className="btn-primary gap-2 py-3 px-8">
+                {isLastQ ? 'Finish' : 'Next Question'}
+                <ChevronRight size={16} />
+              </button>
+            </>
+          )}
+          {phase === 'finished' && (
+            <button onClick={onEnd} className="btn-primary gap-2 py-3 px-8">
               Back to Dashboard
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   )
-
-  return null
 }
