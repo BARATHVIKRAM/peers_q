@@ -15,6 +15,7 @@ const uploadRoutes = require('./routes/upload');
 const { initializeSocket } = require('./socket/socketManager');
 
 const app = express();
+app.set("trust proxy", 1);
 const server = http.createServer(app);
 
 // Socket.IO setup
