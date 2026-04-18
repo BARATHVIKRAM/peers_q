@@ -1,3 +1,4 @@
+const Groq = require('groq-sdk');
 const Session = require('../models/Session');
 const Quiz = require('../models/Quiz');
 
@@ -383,24 +384,22 @@ const initializeSocket = (io) => {
 
         const answerCount = cache.questionAnswers.size;
         const totalParticipants = cache.participants.size;
+
         io.to(`host:${sessionCode}`).emit('host:answer_update', {
           answerCount,
           totalParticipants,
-          percentage: totalParticipants > 0 ? Math.round((answerCount / totalParticipants) * 100) : 0
+          percentage:
+            totalParticipants > 0
+              ? Math.round((answerCount / totalParticipants) * 100)
+              : 0
         });
 
-        // Auto-end if everyone answered
-        if (answerCount >= totalParticipants && totalParticipants > 0 && !cache.questionEnded) {
-          const freshSession = await Session.findOne({ code: sessionCode }).populate('quizId');
-          const currentQ = freshSession.quizId.questions[cache.currentQuestionIndex];
-          await endQuestion(io, sessionCode, freshSession._id, currentQ, cache.currentQuestionIndex);
-        }
-
-      } catch (err) {
-        console.error('participant:answer error:', err);
-        socket.emit('error', { message: err.message });
-      }
-    });
+// Timer always runs to completion — no auto-end when all answered
+} catch (err) {
+  console.error('participant:answer error:', err);
+  socket.emit('error', { message: err.message });
+}
+});
 
     // ============================================================
     // DISCONNECT
@@ -449,13 +448,36 @@ async function endQuestion(io, sessionCode, sessionId, question, questionIndex) 
 
   const correctAnswerIds = question.options.filter(o => o.isCorrect).map(o => o.id);
 
+  // Generate AI explanation via Groq (2-3 lines max)
+  let aiExplanation = question.explanation || '';
+  try {
+    if (process.env.GROQ_API_KEY) {
+      const correctOptionText = question.options.find(o => o.isCorrect)?.text || '';
+      const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+      const resp = await groq.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        max_tokens: 120,
+        temperature: 0.4,
+        messages: [{
+          role: 'user',
+          content: `Question: "${question.text}"\nCorrect answer: "${correctOptionText}"\n\nWrite a clear 2-sentence explanation of why this is correct. Be concise and educational. No bullet points, no markdown.`
+        }]
+      });
+      const generated = resp.choices[0]?.message?.content?.trim();
+      if (generated) aiExplanation = generated;
+    }
+  } catch (e) {
+    console.error('Groq explanation error:', e.message);
+    // fallback to stored explanation silently
+  }
+
   io.to(`session:${sessionCode}`).emit('question:ended', {
     questionId: question.id,
-    correctAnswerId: correctAnswerIds[0], // primary correct
+    correctAnswerId: correctAnswerIds[0],
     correctAnswerIds,
     answerStats,
     totalAnswers: cache.questionAnswers.size,
-    explanation: question.explanation,
+    explanation: aiExplanation,
     questionIndex
   });
 

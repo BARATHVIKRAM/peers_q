@@ -17,7 +17,7 @@ const LETTERS = ['A', 'B', 'C', 'D']
 const CONFETTI_COLORS = ['#0057FF', '#00D4FF', '#FFB800', '#00E87A', '#FF4060', '#8B5CF6', '#FFF']
 
 // ── Confetti ──
-function Confetti({ count = 100 }) {
+function Confetti({ count = 120 }) {
   const pieces = useRef(
     Array.from({ length: count }, (_, i) => ({
       id: i,
@@ -33,7 +33,7 @@ function Confetti({ count = 100 }) {
   ).current
 
   return (
-    <div className="fixed inset-0 pointer-events-none overflow-hidden" style={{ zIndex: 9999 }}>
+    <div className="fixed inset-0 pointer-events-none overflow-hidden" style={{ zIndex: 9998 }}>
       {pieces.map(p => (
         <div key={p.id} style={{
           position: 'absolute',
@@ -49,69 +49,72 @@ function Confetti({ count = 100 }) {
   )
 }
 
-// ── Winner Celebration — shown on host screen (TV mirror) ──
+// ── Winner Celebration overlay — shown on host screen (TV-visible) ──
 function WinnerCelebration({ winner, onDismiss }) {
   const [visible, setVisible] = useState(false)
-  useEffect(() => { setTimeout(() => setVisible(true), 100) }, [])
+  useEffect(() => { const t = setTimeout(() => setVisible(true), 80); return () => clearTimeout(t) }, [])
 
   return (
     <div className="fixed inset-0 flex items-center justify-center"
       style={{
-        zIndex: 1000,
-        background: 'rgba(10,15,30,0.88)',
-        backdropFilter: 'blur(10px)',
+        zIndex: 9999,
+        background: 'rgba(10,15,30,0.9)',
+        backdropFilter: 'blur(12px)',
         opacity: visible ? 1 : 0,
         transition: 'opacity 0.5s ease'
       }}>
-      <div className="text-center px-8"
+      <div className="text-center px-10 max-w-lg w-full"
         style={{
-          transform: visible ? 'scale(1)' : 'scale(0.7)',
+          transform: visible ? 'scale(1)' : 'scale(0.65)',
           transition: 'transform 0.8s cubic-bezier(0.34,1.56,0.64,1)'
         }}>
-        {/* Crown */}
-        <div className="text-7xl mb-3" style={{ animation: 'float 2s ease-in-out infinite' }}>👑</div>
 
-        {/* Avatar */}
-        <div className="w-36 h-36 rounded-full flex items-center justify-center mx-auto mb-5 text-7xl"
+        {/* Floating crown */}
+        <div className="text-8xl mb-4" style={{ animation: 'float 2s ease-in-out infinite' }}>👑</div>
+
+        {/* Glowing avatar */}
+        <div className="w-40 h-40 rounded-full flex items-center justify-center mx-auto mb-5"
           style={{
+            fontSize: '5rem',
             background: 'linear-gradient(135deg,#FFB800,#FF8C00)',
-            boxShadow: '0 0 80px rgba(255,184,0,0.7), 0 0 160px rgba(255,184,0,0.3)',
+            boxShadow: '0 0 80px rgba(255,184,0,0.8), 0 0 180px rgba(255,184,0,0.3)',
             animation: 'winnerGlow 2s ease-in-out infinite'
           }}>
           {winner.avatar}
         </div>
 
-        {/* Badge */}
-        <div className="inline-flex items-center gap-2 px-5 py-2 rounded-full mb-5 font-bold text-lg"
+        {/* Winner badge */}
+        <div className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full mb-5 font-bold text-lg"
           style={{ background: 'linear-gradient(135deg,#FFB800,#FF8C00)', color: 'white' }}>
-          🏆 &nbsp;WINNER
+          🏆 &nbsp; WINNER
         </div>
 
+        {/* Name */}
         <h2 className="font-display font-bold text-white mb-2"
           style={{
-            fontSize: 'clamp(2.5rem,6vw,4rem)',
+            fontSize: 'clamp(2.5rem,7vw,4.5rem)',
             letterSpacing: '-0.03em',
-            textShadow: '0 0 60px rgba(255,184,0,0.6)'
+            textShadow: '0 0 60px rgba(255,184,0,0.7)'
           }}>
           {winner.name}
         </h2>
 
+        {/* Score */}
         <p className="font-mono font-bold mb-1"
-          style={{ fontSize: 'clamp(2rem,5vw,3rem)', color: 'var(--accent-gold)' }}>
+          style={{ fontSize: 'clamp(2rem,5vw,3.5rem)', color: 'var(--accent-gold)' }}>
           {winner.score.toLocaleString()} pts
         </p>
-
-        <p className="text-white/50 text-sm mb-6">
-          {winner.correctAnswers}/{winner.totalAnswers} correct answers
+        <p className="text-white/50 text-base mb-8">
+          {winner.correctAnswers}/{winner.totalAnswers} correct
           {winner.streak > 1 && ` · 🔥 ${winner.streak} streak`}
         </p>
 
-        <p className="text-white/40 text-xs mb-8">
-          {winner.correctAnswers}/{winner.totalAnswers} correct · {winner.streak > 1 ? `🔥 ${winner.streak} streak` : ''}
-        </p>
-
-        <button onClick={onDismiss} className="btn-primary gap-2 px-10 py-4 text-lg"
-          style={{ background: 'linear-gradient(135deg,#FFB800,#FF8C00)', boxShadow: '0 12px 40px rgba(255,184,0,0.5)' }}>
+        <button onClick={onDismiss}
+          className="btn-primary gap-2 px-12 py-4 text-lg font-display"
+          style={{
+            background: 'linear-gradient(135deg,#FFB800,#FF8C00)',
+            boxShadow: '0 12px 50px rgba(255,184,0,0.5)'
+          }}>
           See Final Leaderboard →
         </button>
       </div>
@@ -137,7 +140,8 @@ export default function HostSessionPage() {
   const [timeLeft, setTimeLeft] = useState(0)
   const [countdown, setCountdown] = useState(null)
   const [showQR, setShowQR] = useState(false)
-  const [showAnswerKey, setShowAnswerKey] = useState(false) // host-only toggle during question
+  // Private peek toggle — only reveals answer text to host, never sent to TV via socket
+  const [showAnswerText, setShowAnswerText] = useState(false)
   const [showWinner, setShowWinner] = useState(false)
   const timerRef = useRef(null)
   const countdownRef = useRef(null)
@@ -155,7 +159,7 @@ export default function HostSessionPage() {
     socket.on('question:countdown', ({ seconds, questionIndex, totalQuestions }) => {
       setPhase('countdown')
       setQIndex(questionIndex); setTotalQs(totalQuestions)
-      setShowAnswerKey(false)
+      setShowAnswerText(false)
       let s = seconds; setCountdown(s)
       clearInterval(countdownRef.current)
       countdownRef.current = setInterval(() => {
@@ -166,7 +170,7 @@ export default function HostSessionPage() {
 
     socket.on('question:start_host', ({ question, questionIndex: qi, totalQuestions: tq, startTime }) => {
       setCurrentQ(question); setQIndex(qi); setTotalQs(tq)
-      setShowAnswerKey(false) // always start masked
+      setShowAnswerText(false) // always start with answers masked
       setPhase('question')
       setAnswerUpdate({ answerCount: 0, totalParticipants: participants.length })
       clearTimeout(timerRef.current)
@@ -183,7 +187,11 @@ export default function HostSessionPage() {
 
     socket.on('question:ended', ({ correctAnswerId, correctAnswerIds, answerStats, totalAnswers, explanation }) => {
       clearTimeout(timerRef.current)
-      setQResults({ correctAnswerId, correctAnswerIds: correctAnswerIds || [correctAnswerId], answerStats, totalAnswers, explanation })
+      setQResults({
+        correctAnswerId,
+        correctAnswerIds: correctAnswerIds || [correctAnswerId],
+        answerStats, totalAnswers, explanation
+      })
       setPhase('results')
     })
 
@@ -194,8 +202,7 @@ export default function HostSessionPage() {
     socket.on('quiz:finished', ({ leaderboard: lb }) => {
       setLeaderboard(lb)
       setPhase('finished')
-      // Short delay then show winner celebration on TV
-      setTimeout(() => setShowWinner(true), 800)
+      setTimeout(() => setShowWinner(true), 700)
     })
 
     socket.on('error', ({ message }) => toast.error(message))
@@ -232,9 +239,7 @@ export default function HostSessionPage() {
     </div>
   )
 
-  // ────────────────────────────────────
-  // LOBBY
-  // ────────────────────────────────────
+  // ─── LOBBY ───────────────────────────
   if (phase === 'lobby') return (
     <div className="min-h-screen page-bg">
       <div className="max-w-5xl mx-auto px-6 py-8">
@@ -255,7 +260,6 @@ export default function HostSessionPage() {
         </div>
 
         <div className="grid lg:grid-cols-2 gap-6">
-          {/* Code card */}
           <div className="surface p-8 text-center">
             <p className="text-xs font-semibold text-[var(--slate)] uppercase tracking-wider mb-3">JOIN CODE</p>
             <div className="flex items-center justify-center gap-3 mb-3">
@@ -280,7 +284,6 @@ export default function HostSessionPage() {
             )}
           </div>
 
-          {/* Participants */}
           <div className="surface p-6 flex flex-col">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
@@ -315,9 +318,7 @@ export default function HostSessionPage() {
     </div>
   )
 
-  // ────────────────────────────────────
-  // COUNTDOWN
-  // ────────────────────────────────────
+  // ─── COUNTDOWN ───────────────────────
   if (phase === 'countdown') return (
     <div className="min-h-screen page-bg flex items-center justify-center">
       <div className="text-center anim-scale-in">
@@ -338,21 +339,19 @@ export default function HostSessionPage() {
     </div>
   )
 
-  // ────────────────────────────────────
-  // ACTIVE QUESTION
-  // Answers are MASKED — shown as blank colored tiles on TV
-  // Host has a small private toggle to peek at answer key
-  // ────────────────────────────────────
+  // ─── ACTIVE QUESTION ─────────────────
+  // • Answer text BLURRED — no correct/wrong revealed during active timer
+  // • NO green tick shown at any point during the question
+  // • Timer always runs to full time limit regardless of how many have answered
+  // • Small private "peek" toggle bottom-left for host only (not a socket event)
   if (phase === 'question' && currentQ) return (
     <div className="min-h-screen page-bg">
       <div className="max-w-4xl mx-auto px-6 py-6">
 
-        {/* Timer bar */}
         <div className="progress-bar mb-5">
           <div className={`progress-fill ${timerPct < 25 ? 'danger' : ''}`} style={{ width: `${timerPct}%` }} />
         </div>
 
-        {/* Stats row */}
         <div className="flex items-center justify-between mb-6">
           <span className="font-mono text-sm font-semibold text-[var(--slate)]">Q {qIndex + 1} / {totalQs}</span>
           <div className={`flex items-center gap-2 font-mono font-bold text-3xl ${timeLeft <= 5 ? 'anim-countdown-beat' : ''}`}
@@ -367,68 +366,60 @@ export default function HostSessionPage() {
           </div>
         </div>
 
-        {/* Question — large, clear for TV */}
+        {/* Question — large for TV */}
         <div className="surface p-8 mb-6 text-center"
           style={{ boxShadow: '0 8px 40px rgba(0,87,255,0.08)' }}>
           {currentQ.image && (
             <img src={currentQ.image} alt="" className="w-full max-h-56 object-cover rounded-2xl mb-5" />
           )}
-          <h2 className="font-display font-bold text-[clamp(1.4rem,3vw,2rem)] text-[var(--ink)] leading-tight">
+          <h2 className="font-display font-bold leading-tight text-[var(--ink)]"
+            style={{ fontSize: 'clamp(1.4rem,3vw,2.2rem)' }}>
             {currentQ.text}
           </h2>
         </div>
 
-        {/* Answer tiles — MASKED on TV, letters + colors only */}
+        {/* Answer tiles — MASKED during question time, no correct indicator at all */}
         <div className="grid grid-cols-2 gap-4 mb-6">
           {currentQ.options.map((opt, i) => {
             const c = OPT_COLORS[i % OPT_COLORS.length]
             return (
               <div key={opt.id}
-                className="p-5 rounded-3xl border-2 flex items-center gap-4 transition-all"
-                style={{ background: c.bg, borderColor: c.border + '50' }}>
-                {/* Letter badge — always visible */}
+                className="p-5 rounded-3xl border-2 flex items-center gap-4"
+                style={{ background: c.bg, borderColor: c.border + '45' }}>
+                {/* Letter always visible */}
                 <span className="w-10 h-10 rounded-xl flex items-center justify-center text-base font-bold text-white flex-shrink-0"
                   style={{ background: c.fill }}>
                   {LETTERS[i]}
                 </span>
-                {/* Answer text — blurred/hidden unless host peeks */}
-                <div className="flex-1 relative overflow-hidden">
-                  <span className={`font-medium text-[var(--ink)] text-base block transition-all duration-300 ${
-                    showAnswerKey ? '' : 'blur-sm select-none'
+                {/* Answer text — blurred unless host peeks privately */}
+                <div className="flex-1 relative overflow-hidden min-w-0">
+                  <span className={`font-medium text-[var(--ink)] text-base block leading-snug transition-all duration-300 ${
+                    showAnswerText ? '' : 'blur-sm select-none opacity-50'
                   }`}>
                     {opt.text}
                   </span>
-                  {!showAnswerKey && (
-                    <span className="absolute inset-0 flex items-center">
-                      <span className="h-2.5 rounded-full w-4/5"
-                        style={{ background: c.fill + '30' }} />
-                    </span>
-                  )}
                 </div>
-                {/* Correct marker — only when peeking */}
-                {showAnswerKey && opt.isCorrect && (
-                  <span className="chip chip-green text-xs flex-shrink-0">✓</span>
-                )}
+                {/* ✦ NO correct tick shown here at all — removed intentionally ✦ */}
               </div>
             )
           })}
         </div>
 
-        {/* Host controls — small bar at bottom */}
+        {/* Host controls row */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            {/* Private peek toggle — small and subtle */}
-            <button onClick={() => setShowAnswerKey(k => !k)}
-              className="flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-xl transition-all"
-              style={{
-                background: showAnswerKey ? 'rgba(0,87,255,0.1)' : 'var(--paper)',
-                color: showAnswerKey ? 'var(--blue-vivid)' : 'var(--slate)',
-                border: showAnswerKey ? '1px solid rgba(0,87,255,0.2)' : '1px solid var(--paper)'
-              }}>
-              {showAnswerKey ? <Eye size={13} /> : <EyeOff size={13} />}
-              {showAnswerKey ? 'Answers visible (private)' : 'Peek at answers'}
-            </button>
-          </div>
+          {/* Private peek — small, subtle, bottom-left */}
+          <button
+            onClick={() => setShowAnswerText(k => !k)}
+            className="flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-xl transition-all"
+            style={{
+              background: showAnswerText ? 'rgba(0,87,255,0.1)' : 'var(--paper)',
+              color: showAnswerText ? 'var(--blue-vivid)' : 'var(--slate)',
+              border: `1px solid ${showAnswerText ? 'rgba(0,87,255,0.2)' : 'var(--paper)'}`
+            }}>
+            {showAnswerText ? <Eye size={13} /> : <EyeOff size={13} />}
+            {showAnswerText ? 'Answers shown (private)' : 'Peek answers privately'}
+          </button>
+
           <div className="flex items-center gap-2">
             <button onClick={endQuestion} className="btn-secondary gap-1.5 py-2 text-sm">
               <SkipForward size={15} /> End Early
@@ -443,15 +434,12 @@ export default function HostSessionPage() {
     </div>
   )
 
-  // ────────────────────────────────────
-  // RESULTS — full stats visible on TV
-  // Host controls when to show leaderboard
-  // ────────────────────────────────────
+  // ─── RESULTS ─────────────────────────
+  // Full answer distribution + AI explanation visible to everyone (TV-safe)
   if (phase === 'results') return (
     <div className="min-h-screen page-bg">
       <div className="max-w-3xl mx-auto px-6 py-8">
 
-        {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div>
             <h2 className="font-display font-bold text-2xl text-[var(--ink)]">Answer Results</h2>
@@ -464,13 +452,13 @@ export default function HostSessionPage() {
           </span>
         </div>
 
-        {/* Question */}
+        {/* Question recap */}
         <div className="surface p-5 mb-4">
           <p className="text-xs font-semibold text-[var(--slate)] uppercase tracking-wider mb-2">Question</p>
           <p className="font-display font-bold text-xl text-[var(--ink)] leading-snug">{currentQ?.text}</p>
         </div>
 
-        {/* Answer distribution — large bars, clear on TV */}
+        {/* Answer distribution bars */}
         <div className="surface p-6 mb-4">
           <div className="flex items-center gap-2 mb-5">
             <BarChart2 size={17} style={{ color: 'var(--blue-vivid)' }} />
@@ -499,15 +487,13 @@ export default function HostSessionPage() {
                     </span>
                     {isCorrect && <span className="chip chip-green font-bold">✓ correct</span>}
                   </div>
-                  {/* Tall bar — easy to read on TV */}
-                  <div className="h-5 rounded-full overflow-hidden ml-11"
-                    style={{ background: 'var(--paper)' }}>
+                  <div className="h-5 rounded-full overflow-hidden ml-11" style={{ background: 'var(--paper)' }}>
                     <div className="h-full rounded-full transition-all duration-700 ease-out"
                       style={{
                         width: `${pct}%`,
                         background: isCorrect
                           ? 'linear-gradient(90deg,#00E87A,#00C06A)'
-                          : `linear-gradient(90deg,${c.fill}CC,${c.fill}66)`,
+                          : `linear-gradient(90deg,${c.fill}CC,${c.fill}55)`,
                         minWidth: pct > 0 ? '8px' : '0'
                       }} />
                   </div>
@@ -516,17 +502,20 @@ export default function HostSessionPage() {
             })}
           </div>
 
-          {/* Explanation */}
+          {/* AI-generated explanation */}
           {qResults?.explanation && (
             <div className="mt-5 p-4 rounded-2xl flex gap-3"
-              style={{ background: 'rgba(0,87,255,0.05)', border: '1px solid rgba(0,87,255,0.1)' }}>
+              style={{ background: 'rgba(0,87,255,0.05)', border: '1px solid rgba(0,87,255,0.12)' }}>
               <span className="text-xl flex-shrink-0">💡</span>
-              <p className="text-sm text-[var(--ink)] leading-relaxed">{qResults.explanation}</p>
+              <div>
+                <p className="text-xs font-semibold text-[var(--blue-vivid)] mb-1 uppercase tracking-wide">AI Explanation</p>
+                <p className="text-sm text-[var(--ink)] leading-relaxed">{qResults.explanation}</p>
+              </div>
             </div>
           )}
         </div>
 
-        {/* Host action — centered, prominent */}
+        {/* Host action */}
         <div className="surface p-5 text-center">
           <p className="text-xs text-[var(--slate)] mb-4">
             Participants are viewing this screen too. Click when ready to continue.
@@ -545,29 +534,25 @@ export default function HostSessionPage() {
     </div>
   )
 
-  // ────────────────────────────────────
-  // LEADERBOARD
-  // ────────────────────────────────────
+  // ─── LEADERBOARD ─────────────────────
   if (phase === 'leaderboard') return (
     <LeaderboardScreen
       leaderboard={leaderboard}
       qIndex={qIndex}
       totalQs={totalQs}
       isLastQ={isLastQ}
+      isFinished={false}
       onNext={nextQuestion}
       onEndQuiz={endQuiz}
-      isFinished={false}
     />
   )
 
-  // ────────────────────────────────────
-  // FINISHED — confetti + winner shown on TV
-  // ────────────────────────────────────
+  // ─── FINISHED — confetti + winner on TV ──
   if (phase === 'finished') {
     const winner = leaderboard[0]
     return (
       <>
-        <Confetti count={120} />
+        <Confetti count={130} />
         {showWinner && winner && (
           <WinnerCelebration winner={winner} onDismiss={() => setShowWinner(false)} />
         )}
@@ -589,7 +574,7 @@ export default function HostSessionPage() {
   return null
 }
 
-// ── Animated leaderboard screen ──
+// ── Animated leaderboard ──
 function LeaderboardScreen({ leaderboard, qIndex, totalQs, isLastQ, isFinished, onNext, onEnd, onEndQuiz }) {
   const [displayed, setDisplayed] = useState([])
 
@@ -601,16 +586,15 @@ function LeaderboardScreen({ leaderboard, qIndex, totalQs, isLastQ, isFinished, 
     return () => timers.forEach(clearTimeout)
   }, [leaderboard])
 
-  const rankLabel = (i) =>
-    i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`
+  const rankLabel = (i) => i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`
 
   return (
     <div className="min-h-screen page-bg">
       <div className="max-w-2xl mx-auto px-6 py-8">
         <div className="text-center mb-8">
           <Trophy size={44} className="mx-auto mb-3" style={{ color: 'var(--accent-gold)' }} />
-          <h2 className="font-display font-bold text-[clamp(2rem,5vw,3rem)] text-[var(--ink)]"
-            style={{ letterSpacing: '-0.02em' }}>
+          <h2 className="font-display font-bold text-[var(--ink)]"
+            style={{ fontSize: 'clamp(2rem,5vw,3rem)', letterSpacing: '-0.02em' }}>
             {isFinished ? 'Final Results!' : 'Leaderboard'}
           </h2>
           {!isFinished && (
@@ -623,10 +607,10 @@ function LeaderboardScreen({ leaderboard, qIndex, totalQs, isLastQ, isFinished, 
             <div key={`${p.name}-${i}`}
               className={`lb-item rank-${i + 1}`}
               style={{
+                padding: '16px 22px',
                 opacity: displayed.includes(i) ? 1 : 0,
                 transform: displayed.includes(i) ? 'translateY(0) scale(1)' : 'translateY(24px) scale(0.97)',
-                transition: 'all 0.65s cubic-bezier(0.34,1.2,0.64,1)',
-                padding: '16px 22px'
+                transition: 'all 0.65s cubic-bezier(0.34,1.2,0.64,1)'
               }}>
               <span className="font-bold w-12 text-center flex-shrink-0"
                 style={{

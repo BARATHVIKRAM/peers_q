@@ -12,35 +12,35 @@ const FEATURES = [
   {
     icon: Users,
     title: '50 Live Participants',
-    desc: 'Real-time WebSocket sync. Everyone sees questions simultaneously, zero lag, zero dropped answers.',
+    desc: 'Real-time WebSocket sync. Everyone sees questions simultaneously — zero lag, zero dropped answers.',
     color: '#0EA5E9',
     bg: 'rgba(14,165,233,0.07)'
   },
   {
     icon: Trophy,
     title: 'Animated Leaderboard',
-    desc: 'Players move up and down in slow motion after every question. See streaks, ranks, and crowns live.',
+    desc: 'Players move up and down after every question with smooth animation. See streaks, ranks, and crowns live.',
     color: '#FFB800',
     bg: 'rgba(255,184,0,0.08)'
   },
   {
     icon: QrCode,
     title: 'Instant QR Join',
-    desc: 'Scan to join — no app, no login. Works on any phone browser instantly.',
+    desc: 'Scan to join — no app, no login needed. Works on any phone browser in seconds.',
     color: '#00E87A',
     bg: 'rgba(0,232,122,0.07)'
   },
   {
     icon: Clock,
     title: 'Timed Scoring',
-    desc: 'Faster correct answers earn more points. Speed and knowledge both matter.',
+    desc: 'Faster correct answers earn more points. Speed and knowledge both matter every round.',
     color: '#8B5CF6',
     bg: 'rgba(139,92,246,0.07)'
   },
   {
     icon: Sparkles,
-    title: 'Beyond Mentimeter',
-    desc: 'Multi-select questions, custom complexity prompts, drag-to-reorder options, streaks, and winner celebrations.',
+    title: 'Features others lack',
+    desc: 'Multi-select questions, custom AI prompts, drag-to-reorder options, TV-safe host mode, streaks, and winner celebrations.',
     color: '#FF4060',
     bg: 'rgba(255,64,96,0.07)'
   }
@@ -55,7 +55,6 @@ export default function LandingPage() {
           style={{ background: 'radial-gradient(ellipse at top right, rgba(0,87,255,0.12) 0%, transparent 60%)' }} />
         <div className="absolute bottom-0 left-0 w-[500px] h-[500px] opacity-20"
           style={{ background: 'radial-gradient(ellipse at bottom left, rgba(0,212,255,0.1) 0%, transparent 60%)' }} />
-        {/* Grid pattern */}
         <div className="absolute inset-0 opacity-[0.025]"
           style={{
             backgroundImage: 'linear-gradient(rgba(0,87,255,1) 1px, transparent 1px), linear-gradient(90deg, rgba(0,87,255,1) 1px, transparent 1px)',
@@ -111,8 +110,8 @@ export default function LandingPage() {
         </h1>
 
         <p className="text-xl text-[var(--slate)] max-w-2xl mx-auto mb-10 leading-relaxed anim-fade-up d2">
-          Upload a document, let AI build your quiz, and watch 50 people compete live —
-          with animated leaderboards, QR joining, and a winner celebration they'll remember.
+          Upload a document, let AI build your quiz, and watch your audience compete live —
+          with animated leaderboards, QR joining, AI explanations, and a winner celebration they'll remember.
         </p>
 
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3 anim-fade-up d3">
@@ -127,11 +126,9 @@ export default function LandingPage() {
 
         {/* Hero visual */}
         <div className="mt-20 relative anim-fade-up d4">
-          <div className="max-w-3xl mx-auto surface p-1 shadow-blue-lg"
-            style={{ borderRadius: '28px' }}>
+          <div className="max-w-3xl mx-auto surface p-1 shadow-blue-lg" style={{ borderRadius: '28px' }}>
             <div className="rounded-3xl overflow-hidden"
               style={{ background: 'var(--ink)', minHeight: '300px', padding: '32px' }}>
-              {/* Fake quiz preview */}
               <div className="flex items-center justify-between mb-6">
                 <div className="flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full" style={{ background: '#FF4060' }} />
@@ -157,7 +154,7 @@ export default function LandingPage() {
                   { label: 'D', text: 'Neptune', color: '#EF4444' }
                 ].map(opt => (
                   <div key={opt.label}
-                    className="flex items-center gap-3 p-3 rounded-2xl transition-all"
+                    className="flex items-center gap-3 p-3 rounded-2xl"
                     style={{
                       background: opt.selected ? 'rgba(139,92,246,0.2)' : 'rgba(255,255,255,0.05)',
                       border: `2px solid ${opt.selected ? '#8B5CF6' : 'rgba(255,255,255,0.07)'}`,
@@ -180,7 +177,7 @@ export default function LandingPage() {
             <span className="text-2xl">🥇</span>
             <div>
               <p className="text-xs font-bold text-[var(--ink)]">Sarah K.</p>
-              <p className="text-xs font-mono text-[var(--blue-vivid)]">1,240 pts</p>
+              <p className="text-xs font-mono" style={{ color: 'var(--blue-vivid)' }}>1,240 pts</p>
             </div>
           </div>
           <div className="absolute -right-4 top-1/3 surface p-3 shadow-blue-md hidden md:flex items-center gap-2 anim-float"
@@ -196,15 +193,15 @@ export default function LandingPage() {
         <div className="text-center mb-14">
           <h2 className="font-display font-bold text-4xl text-[var(--ink)] mb-3"
             style={{ letterSpacing: '-0.02em' }}>
-            Everything Mentimeter doesn't have
+            Everything a live quiz needs
           </h2>
           <p className="text-[var(--slate)] text-lg">Built for teachers, trainers, and anyone who wants real engagement.</p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {FEATURES.map(({ icon: Icon, title, desc, color, bg }, i) => (
-            <div key={title} className={`surface p-6 group cursor-default anim-fade-up d${i + 1} hover:shadow-card-hover transition-all duration-300`}
-              style={{ ':hover': { transform: 'translateY(-4px)' } }}>
+            <div key={title}
+              className={`surface p-6 group cursor-default anim-fade-up d${Math.min(i+1,8)} transition-all duration-300 hover:-translate-y-1 hover:shadow-card-hover`}>
               <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform group-hover:scale-110"
                 style={{ background: bg }}>
                 <Icon size={22} style={{ color }} />
@@ -234,8 +231,7 @@ export default function LandingPage() {
             <Link to="/register"
               className="inline-flex items-center gap-2 font-display font-bold text-base px-8 py-4 rounded-2xl transition-all hover:scale-105"
               style={{ background: 'white', color: 'var(--blue-vivid)' }}>
-              <Zap size={18} fill="var(--blue-vivid)" />
-              Start for Free
+              <Zap size={18} fill="var(--blue-vivid)" /> Start for Free
             </Link>
             <Link to="/join"
               className="inline-flex items-center gap-2 font-display font-bold text-base px-8 py-4 rounded-2xl transition-all hover:bg-white/10"
