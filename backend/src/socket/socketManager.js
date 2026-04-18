@@ -459,15 +459,7 @@ async function endQuestion(io, sessionCode, sessionId, question, questionIndex) 
     questionIndex
   });
 
-  // Auto-show leaderboard after 3s
-  setTimeout(async () => {
-    try {
-      const leaderboard = await getLeaderboard(sessionCode);
-      await Session.findOneAndUpdate({ code: sessionCode }, { status: 'leaderboard' });
-      if (cache) cache.status = 'leaderboard';
-      io.to(`session:${sessionCode}`).emit('leaderboard:show', { leaderboard, questionIndex });
-    } catch {}
-  }, 3500);
+  // Host manually controls leaderboard via host:show_leaderboard event
 }
 
 // ── Helper: End quiz ──
