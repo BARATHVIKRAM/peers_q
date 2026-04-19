@@ -383,42 +383,46 @@ const initializeSocket = (io) => {
         });
 
         const answerCount = cache.questionAnswers.size;
-        const totalParticipants = cache.participants.size;
+const totalParticipants = cache.participants.size;
 
-        io.to(`host:${sessionCode}`).emit('host:answer_update', {
-          answerCount,
-          totalParticipants,
-          percentage:
-            totalParticipants > 0
-              ? Math.round((answerCount / totalParticipants) * 100)
-              : 0
-        });
+io.to(`host:${sessionCode}`).emit('host:answer_update', {
+  answerCount,
+  totalParticipants,
+  percentage:
+    totalParticipants > 0
+      ? Math.round((answerCount / totalParticipants) * 100)
+      : 0
+});
 
 // Timer always runs to completion — no auto-end when all answered
+
 } catch (err) {
   console.error('participant:answer error:', err);
   socket.emit('error', { message: err.message });
 }
 });
 
-    // ============================================================
-    // DISCONNECT
-    // ============================================================
-    socket.on('disconnect', async () => {
-      for (const [sessionCode, cache] of activeSessions) {
-        if (cache.participants.has(socket.id)) {
-          cache.participants.delete(socket.id);
-          await Session.findOneAndUpdate(
-            { code: sessionCode, 'participants.socketId': socket.id },
-            { $set: { 'participants.$.isActive': false } }
-          ).catch(() => {});
-          const participants = await getParticipants(sessionCode).catch(() => []);
-          io.to(`session:${sessionCode}`).emit('participants:updated', { participants });
-          break;
-        }
-      }
-    });
-  });
+// ============================================================
+// DISCONNECT
+// ============================================================
+socket.on('disconnect', async () => {
+  for (const [sessionCode, cache] of activeSessions) {
+    if (cache.participants.has(socket.id)) {
+      cache.participants.delete(socket.id);
+
+      await Session.findOneAndUpdate(
+        { code: sessionCode, 'participants.socketId': socket.id },
+        { $set: { 'participants.$.isActive': false } }
+      ).catch(() => {});
+
+      const participants = await getParticipants(sessionCode).catch(() => []);
+      io.to(`session:${sessionCode}`).emit('participants:updated', { participants });
+
+      break;
+    }
+  }
+});
+});
 };
 
 // ── Helper: End a question ──
@@ -453,15 +457,26 @@ async function endQuestion(io, sessionCode, sessionId, question, questionIndex) 
   try {
     if (process.env.GROQ_API_KEY) {
       const correctOptionText = question.options.find(o => o.isCorrect)?.text || '';
+      // Build full context: all options labeled so AI knows the exact domain
+      const LETTERS = ['A','B','C','D'];
+      const allOptionsText = question.options
+        .map((o, idx) => `${LETTERS[idx] || idx+1}) ${o.text}${o.isCorrect ? ' [CORRECT]' : ''}`)
+        .join(' | ');
       const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
       const resp = await groq.chat.completions.create({
         model: 'llama-3.3-70b-versatile',
-        max_tokens: 120,
-        temperature: 0.4,
-        messages: [{
-          role: 'user',
-          content: `Question: "${question.text}"\nCorrect answer: "${correctOptionText}"\n\nWrite a clear 2-sentence explanation of why this is correct. Be concise and educational. No bullet points, no markdown.`
-        }]
+        max_tokens: 130,
+        temperature: 0.3,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a quiz answer explainer. Always explain the answer strictly within the context of the question as written. Never reinterpret abbreviations or terms — use them exactly as the quiz uses them. If the question is about a technical topic, explain it in that exact technical domain.'
+          },
+          {
+            role: 'user',
+            content: `Quiz question: "${question.text}"\nAll answer choices: ${allOptionsText}\nCorrect answer: "${correctOptionText}"\n\nExplain in exactly 2 sentences why "${correctOptionText}" is correct for THIS specific question. Stay strictly in the domain of the question — do not change subject or reinterpret any term. Plain text only, no bullet points, no markdown.`
+          }
+        ]
       });
       const generated = resp.choices[0]?.message?.content?.trim();
       if (generated) aiExplanation = generated;
